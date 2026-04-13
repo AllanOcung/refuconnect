@@ -31,13 +31,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install only runtime system libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
-        libffi8 \
-        libssl3 \
+        libffi-dev \
         libxml2 \
         libxslt1.1 \
         libpango-1.0-0 \
         libpangoft2-1.0-0 \
-        libgdk-pixbuf2.0-0 \
+        libgdk-pixbuf-2.0-0 \
         fonts-liberation \
         curl \
     && rm -rf /var/lib/apt/lists/*
