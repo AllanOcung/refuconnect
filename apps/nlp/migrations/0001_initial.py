@@ -1,5 +1,4 @@
 """Initial migration for the nlp app: AIModelLog and ThemeCluster."""
-import django.contrib.postgres.fields
 from django.db import migrations, models
 
 
@@ -73,11 +72,7 @@ class Migration(migrations.Migration):
                 ("avg_sentiment", models.CharField(blank=True, max_length=15, null=True)),
                 (
                     "top_keywords",
-                    django.contrib.postgres.fields.ArrayField(
-                        base_field=models.CharField(max_length=50),
-                        default=list,
-                        size=None,
-                    ),
+                    models.JSONField(default=list),
                 ),
                 ("generated_at", models.DateTimeField(auto_now_add=True)),
             ],

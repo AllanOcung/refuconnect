@@ -5,7 +5,18 @@ UserConsent models.
 """
 import django.db.models.deletion
 from django.conf import settings
-from django.db import migrations, models
+from django.db import connection, migrations, models
+
+
+def create_consent_schema(apps, schema_editor):
+    """Create consent_schema on Postgres; no-op on SQLite."""
+    if connection.vendor == "postgresql":
+        schema_editor.execute("CREATE SCHEMA IF NOT EXISTS consent_schema;")
+
+
+def drop_consent_schema(apps, schema_editor):
+    if connection.vendor == "postgresql":
+        schema_editor.execute("DROP SCHEMA IF EXISTS consent_schema CASCADE;")
 
 
 class Migration(migrations.Migration):
@@ -18,11 +29,8 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # ── Create the dedicated consent schema ──────────────────────────────
-        migrations.RunSQL(
-            sql="CREATE SCHEMA IF NOT EXISTS consent_schema;",
-            reverse_sql="DROP SCHEMA IF EXISTS consent_schema CASCADE;",
-        ),
+        # ── Create the dedicated consent schema (Postgres only) ──────────────
+        migrations.RunPython(create_consent_schema, drop_consent_schema),
         # ── Notification ─────────────────────────────────────────────────────
         migrations.CreateModel(
             name="Notification",
@@ -136,7 +144,7 @@ class Migration(migrations.Migration):
             options={
                 "verbose_name": "User Consent",
                 "verbose_name_plural": "User Consents",
-                "db_table": '"consent_schema"."user_consent"',
+                "db_table": "consent_schema_user_consent",
                 "ordering": ["-consent_given_at"],
             },
         ),

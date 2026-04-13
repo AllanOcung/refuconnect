@@ -113,8 +113,7 @@ class UserConsent(models.Model):
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        # Keep consent data in a dedicated PostgreSQL schema
-        db_table = '"consent_schema"."user_consent"'
+        db_table = "consent_schema_user_consent"
         verbose_name = "User Consent"
         verbose_name_plural = "User Consents"
         ordering = ["-consent_given_at"]

@@ -9,7 +9,7 @@ Security:
   - HMAC-SHA256 signature verification using X-AT-Signature header
   - Idempotency guard via Redis (TTL=300 s)
   - Multi-part SMS assembly via Redis + Celery countdown task
-  - Phone numbers are NEVER logged; only anonymous_user_id or feedback_id.
+  - Phone numbers are NEVER logged; only anonymous_user_id or feedback_id..
 """
 from __future__ import annotations
 
