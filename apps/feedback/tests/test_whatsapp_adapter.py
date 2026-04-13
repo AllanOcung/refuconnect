@@ -82,8 +82,12 @@ def _status_payload(wamid: str = "wamid.sts", raw_status: str = "delivered") -> 
 def _post_request(payload: dict) -> object:
     factory = APIRequestFactory()
     body_bytes = json.dumps(payload).encode()
-    sig = _make_wa_sig(body_bytes)
-    req = factory.post("/api/v1/feedback/webhooks/whatsapp/", data=payload, format="json")
+    req = factory.post(
+        "/api/v1/feedback/webhooks/whatsapp/",
+        data=body_bytes,
+        content_type="application/json",
+    )
+    sig = _make_wa_sig(req.body)
     req.META["HTTP_X_HUB_SIGNATURE_256"] = sig
     return req
 
