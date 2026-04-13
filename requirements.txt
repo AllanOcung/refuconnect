@@ -1,0 +1,45 @@
+# ─── Django core ─────────────────────────────────────────────────────────────
+Django==4.2.16
+djangorestframework==3.15.2
+djangorestframework-simplejwt==5.3.1
+django-cors-headers==4.4.0
+django-filter==24.3
+dj-database-url==2.2.0
+whitenoise==6.7.0
+django-celery-beat==2.7.0
+
+# ─── Database ────────────────────────────────────────────────────────────────
+psycopg2-binary==2.9.9
+
+# ─── Cache / Task queue ──────────────────────────────────────────────────────
+celery==5.4.0
+redis==5.0.8
+django-redis==5.4.0
+
+# ─── Authentication / Security ───────────────────────────────────────────────
+bcrypt==4.2.0
+pyotp==2.9.0
+cryptography==43.0.1
+
+# ─── AI / NLP ────────────────────────────────────────────────────────────────
+# NOTE: torch is large (~2 GB). For CPU-only installs use:
+#   pip install torch==2.4.1+cpu --index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1
+transformers==4.44.2
+scikit-learn==1.5.1
+numpy==1.26.4
+fasttext-wheel==0.9.2
+vaderSentiment==3.3.2
+
+# ─── External APIs ───────────────────────────────────────────────────────────
+google-cloud-translate==3.16.0
+africastalking==1.2.5
+requests==2.32.3
+
+# ─── Reports ─────────────────────────────────────────────────────────────────
+WeasyPrint==62.3
+openpyxl==3.1.5
+Pillow==10.4.0
+
+# ─── Server ──────────────────────────────────────────────────────────────────
+gunicorn==23.0.0

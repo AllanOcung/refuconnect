@@ -1,0 +1,10 @@
+version: "3.9"
+# Override that exposes db and redis ports to the host.
+# Use: docker compose -f docker-compose.yml -f docker-compose.hostports.yml up db redis -d
+services:
+  db:
+    ports:
+      - "5432:5432"
+  redis:
+    ports:
+      - "6379:6379"

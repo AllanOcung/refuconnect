@@ -1,0 +1,55 @@
+# docker-compose.dev-local.yml
+# Development override — uses python:3.11 (full image, no apt-get needed)
+# and runs Django's dev server directly from mounted source code.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev-local.yml up
+#
+# This file is for local development only. Never use in production.
+
+version: "3.9"
+
+services:
+  web:
+    image: python:3.11
+    build: !reset null
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: >
+      sh -c "pip install -r requirements.txt -q --no-cache-dir 2>&1 | tail -3 &&
+             python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      PYTHONUNBUFFERED: "1"
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    image: python:3.11
+    build: !reset null
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: >
+      sh -c "pip install -r requirements.txt -q --no-cache-dir 2>&1 | tail -3 &&
+             celery -A config.celery worker --loglevel=info --concurrency=2"
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      PYTHONUNBUFFERED: "1"
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_beat: !reset
+    {}
