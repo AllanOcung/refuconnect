@@ -5,7 +5,6 @@ NLP app models:
 """
 from __future__ import annotations
 
-from django.contrib.postgres.fields import ArrayField
 from django.db import models
 
 
@@ -62,8 +61,7 @@ class ThemeCluster(models.Model):
     cluster_label = models.CharField(max_length=100)
     feedback_count = models.IntegerField(default=0)
     avg_sentiment = models.CharField(max_length=15, null=True, blank=True)
-    top_keywords = ArrayField(
-        models.CharField(max_length=50),
+    top_keywords = models.JSONField(
         default=list,
         help_text="Top TF-IDF keywords for this cluster.",
     )
