@@ -58,18 +58,8 @@ def flush_cache():
 @pytest.mark.django_db
 @override_settings(PHONE_HASH_SALT=SALT)
 @patch("apps.feedback.services.normaliser.MessageNormaliser._dispatch_acknowledgement")
-@patch("apps.feedback.services.normaliser.process_feedback_async", create=True)
-def test_sender_zeroed_and_anon_id_format(mock_nlp, mock_ack):
-    # patch deferred NLP import
-    with patch("builtins.__import__", wraps=__import__) as mock_import:
-        def se(name, *args, **kwargs):
-            if name == "apps.nlp.tasks":
-                m = MagicMock()
-                m.process_feedback_async = MagicMock()
-                return m
-            return __import__(name, *args, **kwargs)
-        mock_import.side_effect = se
-
+def test_sender_zeroed_and_anon_id_format(mock_ack):
+    with patch.dict("sys.modules", {"apps.nlp.tasks": MagicMock()}):
         raw = _raw()
         norm = MessageNormaliser()
         feedback_id = norm.process(raw)
