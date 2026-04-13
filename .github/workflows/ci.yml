@@ -20,7 +20,7 @@ jobs:
           cache-dependency-path: requirements-dev.txt
 
       - name: Install lint tools
-        run: pip install flake8==7.1.1 flake8-django==1.4 isort==5.13.2 black==24.8.0
+        run: pip install flake8==7.1.1 isort==5.13.2 black==24.8.0
 
       - name: Black (format check)
         run: black --check --diff .
