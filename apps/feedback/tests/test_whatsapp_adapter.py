@@ -157,7 +157,7 @@ def test_wa_post_bad_signature_returns_403():
 # ── TC-WA-05: Valid text message → normaliser called ─────────────────────────
 
 @override_settings(WHATSAPP_APP_SECRET=WA_APP_SECRET)
-@patch("apps.feedback.adapters.whatsapp.MessageNormaliser")
+@patch("apps.feedback.services.normaliser.MessageNormaliser")
 def test_wa_valid_text_calls_normaliser(mock_cls):
     mock_instance = MagicMock()
     mock_instance.process.return_value = 55
@@ -176,7 +176,7 @@ def test_wa_valid_text_calls_normaliser(mock_cls):
 # ── TC-WA-06: Status update → normaliser NOT called ──────────────────────────
 
 @override_settings(WHATSAPP_APP_SECRET=WA_APP_SECRET)
-@patch("apps.feedback.adapters.whatsapp.MessageNormaliser")
+@patch("apps.feedback.services.normaliser.MessageNormaliser")
 def test_wa_status_update_does_not_call_normaliser(mock_cls):
     mock_instance = MagicMock()
     mock_cls.return_value = mock_instance
@@ -191,7 +191,7 @@ def test_wa_status_update_does_not_call_normaliser(mock_cls):
 # ── TC-WA-07: Unsupported message type → 200, no normaliser ──────────────────
 
 @override_settings(WHATSAPP_APP_SECRET=WA_APP_SECRET)
-@patch("apps.feedback.adapters.whatsapp.MessageNormaliser")
+@patch("apps.feedback.services.normaliser.MessageNormaliser")
 def test_wa_unsupported_message_type_returns_200(mock_cls):
     mock_instance = MagicMock()
     mock_cls.return_value = mock_instance
@@ -209,7 +209,7 @@ def test_wa_unsupported_message_type_returns_200(mock_cls):
 # ── TC-WA-08: Audio message → normaliser with placeholder body ────────────────
 
 @override_settings(WHATSAPP_APP_SECRET=WA_APP_SECRET)
-@patch("apps.feedback.adapters.whatsapp.MessageNormaliser")
+@patch("apps.feedback.services.normaliser.MessageNormaliser")
 @patch("apps.feedback.adapters.whatsapp._download_meta_media", return_value=b"fakeaudiobytes")
 @patch("apps.feedback.adapters.whatsapp._save_media_file", return_value=("feedback_media/2025/01/uuid.ogg", 14))
 def test_wa_audio_message_normaliser_gets_placeholder(mock_save, mock_dl, mock_cls):
