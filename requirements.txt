@@ -43,3 +43,33 @@ Pillow==10.4.0
 
 # ─── Server ──────────────────────────────────────────────────────────────────
 gunicorn==23.0.0
+
+# requirements/nlp.txt
+# NLP subsystem dependencies 
+
+# Language detection
+fasttext-wheel>=0.9.2
+
+# Translation cache
+redis>=5.0.0
+django-redis>=5.4.0
+
+# HTTP client (translation APIs)
+requests>=2.31.0
+
+# Topic classification & sentiment (multilingual)
+transformers>=4.40.0
+torch>=2.2.0           # CPU build; swap for torch+cu121 on GPU hosts
+datasets>=2.19.0       # HuggingFace Trainer API
+accelerate>=0.29.0     # Required by Trainer
+
+# Sentiment (English, rule-based)
+vaderSentiment>=3.3.2
+
+# Location extraction
+spacy>=3.7.0
+# After install: python -m spacy download en_core_web_sm
+
+# Clustering (weekly batch)
+scikit-learn>=1.4.0
+numpy>=1.26.0

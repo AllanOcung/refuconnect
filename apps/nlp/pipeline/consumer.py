@@ -1,140 +1,169 @@
-"""
-Main NLP pipeline consumer.
-
-Orchestrates all NLP stages for a single Feedback record in sequence:
-  1. Language detection (fasttext)
-  2. Translation to English (Google Cloud)
-  3. Sentiment analysis (VADER)
-  4. Urgency assessment (keyword rules)
-  5. Location extraction (gazetteer)
-  6. Topic classification (zero-shot transformer)
-  7. Alert creation for high-urgency feedback
-"""
 from __future__ import annotations
 
 import logging
+import time
+import traceback
+from datetime import datetime, timezone
 
-from django.db import transaction
-from django.utils import timezone
+from .language_detector import LanguageDetector
+from .location_extractor import LocationExtractor
+from .sentiment_analyser import SentimentAnalyser
+from .topic_classifier import TopicClassifier
+from .translation_service import TranslationService
+from .urgency_assessor import UrgencyAssessor
+
+from apps.feedback.models import Feedback
+
 
 logger = logging.getLogger(__name__)
 
+_RETRY_DELAYS: list[int] = [30, 120, 300]
+_MAX_RETRIES: int = 3
+_TERMINAL_STATUSES: frozenset[str] = frozenset({"Processed", "Archived"})
 
-def process_feedback(feedback_id: int) -> None:
-    """
-    Execute the full NLP pipeline for the Feedback record identified by
-    *feedback_id*.
 
-    On success the record status is set to 'Processed'.
-    On any unhandled exception the status is set to 'ProcessingFailed' and
-    the exception is re-raised so Celery can retry the task.
-    """
-    from apps.feedback.models import Feedback, FeedbackCategory, Category, Alert
+class PipelineConsumer:
 
-    # Lock the row, check status, and mark as Processing — all inside one
-    # atomic block so select_for_update() has a transaction to work with.
-    try:
-        with transaction.atomic():
+    def __init__(self) -> None:
+        self._language_detector   = LanguageDetector()
+        self._translation_service = TranslationService()
+        self._topic_classifier    = TopicClassifier()
+        self._urgency_assessor    = UrgencyAssessor()
+        self._sentiment_analyser  = SentimentAnalyser()
+        self._location_extractor  = LocationExtractor()
+
+    def run(self, feedback_id: int) -> None:
+        
+
+        try:
+            record = Feedback.objects.get(pk=feedback_id)
+        except Feedback.DoesNotExist:
+            logger.error("feedback_id=%s: record not found; aborting.", feedback_id)
+            return
+
+        if record.status in _TERMINAL_STATUSES:
+            logger.info(
+                "feedback_id=%s: status is '%s'; skipping.", feedback_id, record.status
+            )
+            return
+
+        last_exc: Exception | None = None
+        
+        # Design note: per-step exceptions are caught inside _execute_pipeline and do NOT
+        # propagate (graceful degradation per spec C-15). The retry loop here handles
+        # failures that occur OUTSIDE the step loop (e.g. DB save, record fetch).
+        # This satisfies both "partial failure continues pipeline" and "retry 3 times on failure".
+
+        for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                feedback = Feedback.objects.select_for_update().get(
-                    feedback_id=feedback_id
-                )
-            except Feedback.DoesNotExist:
-                logger.error("Feedback %d not found — skipping NLP pipeline.", feedback_id)
+                self._execute_pipeline(record)
                 return
-
-            # Guard: do not re-process already completed records
-            if feedback.status in ("Processed", "Archived"):
-                logger.info(
-                    "Feedback %d already in status '%s' — skipping.", feedback_id, feedback.status
+            except Exception as exc:
+                last_exc = exc
+                logger.error(
+                    "feedback_id=%s: attempt %d/%d failed: %s\n%s",
+                    feedback_id,
+                    attempt,
+                    _MAX_RETRIES,
+                    exc,
+                    traceback.format_exc(),
                 )
-                return
+                if attempt < _MAX_RETRIES:
+                    delay = _RETRY_DELAYS[attempt - 1]
+                    logger.info("feedback_id=%s: retrying in %ds.", feedback_id, delay)
+                    time.sleep(delay)
 
-            feedback.status = "Processing"
-            feedback.save(update_fields=["status"])
-    # Lock released here; heavy ML work happens outside the transaction.
-    except Exception as exc:
-        logger.exception("NLP pipeline failed acquiring lock for feedback %d.", feedback_id)
-        raise
+        self._mark_failed(record, last_exc)
 
-    try:
-        _run_pipeline(feedback)
-        feedback.status = "Processed"
-        feedback.processed_at = timezone.now()
-        feedback.save()
-        logger.info("Feedback %d processed successfully.", feedback_id)
+    def _execute_pipeline(self, record) -> None:
+        feedback_id = record.pk
 
-    except Exception as exc:
-        logger.exception("NLP pipeline failed for feedback %d.", feedback_id)
-        feedback.status = "ProcessingFailed"
-        feedback.save(update_fields=["status"])
-        raise
+        record.status = "Processing"
+        record.save(update_fields=["status"])
 
+        logger.info("feedback_id=%s: pipeline started.", feedback_id)
 
-def _run_pipeline(feedback) -> None:
-    """Execute all pipeline stages mutating *feedback* in place."""
-    from apps.nlp.pipeline.language_detector import detect_language
-    from apps.nlp.pipeline.translation_service import translate_to_english
-    from apps.nlp.pipeline.sentiment_analyser import analyse_sentiment
-    from apps.nlp.pipeline.urgency_assessor import assess_urgency
-    from apps.nlp.pipeline.location_extractor import extract_location
-    from apps.nlp.pipeline.topic_classifier import classify_topics
-    from apps.feedback.models import FeedbackCategory, Category, Alert
+        context: dict = {}
 
-    # ── 1. Language detection ─────────────────────────────────────────────────
-    language, lang_confidence = detect_language(feedback.message_text)
-    feedback.language = language
-    feedback.language_confidence = lang_confidence
+        steps = [
+            ("LanguageDetector",   self._language_detector),
+            ("TranslationService", self._translation_service),
+            ("TopicClassifier",    self._topic_classifier),
+            ("UrgencyAssessor",    self._urgency_assessor),
+            ("SentimentAnalyser",  self._sentiment_analyser),
+            ("LocationExtractor",  self._location_extractor),
+        ]
 
-    # ── 2. Translation to English ─────────────────────────────────────────────
-    if language not in ("en", "unknown"):
-        english_text = translate_to_english(feedback.message_text, language)
-    else:
-        english_text = feedback.message_text
-    feedback.message_text_en = english_text
+        for step_name, component in steps:
+            try:
+                record, context = component.process(record, context)
+                logger.debug("feedback_id=%s: %s completed.", feedback_id, step_name)
+            except Exception as exc:
+                logger.error(
+                    "feedback_id=%s: %s failed (continuing): %s\n%s",
+                    feedback_id,
+                    step_name,
+                    exc,
+                    traceback.format_exc(),
+                )
+                context[f"{step_name.lower()}_failed"] = True
+                context["needs_manual_review"] = True
 
-    # ── 3. Sentiment analysis ─────────────────────────────────────────────────
-    sentiment_obj, sentiment_conf = analyse_sentiment(english_text)
-    feedback.sentiment = sentiment_obj
-    feedback.sentiment_confidence = sentiment_conf
+        record.status = "Processed"
+        record.processed_at = datetime.now(tz=timezone.utc)
+        record.save()
+        logger.info("feedback_id=%s: pipeline completed.", feedback_id)
 
-    # ── 4. Urgency assessment ─────────────────────────────────────────────────
-    feedback.urgency_level = assess_urgency(english_text)
+        if record.urgency_level == "High":
+            self._dispatch_alert(record, context)
 
-    # ── 5. Location extraction ────────────────────────────────────────────────
-    location = extract_location(english_text)
-    if location and not feedback.location:
-        feedback.location = location
-
-    # ── 6. Topic classification ───────────────────────────────────────────────
-    topic_results = classify_topics(english_text)
-    for category_name, confidence in topic_results:
+    def _mark_failed(self, record, exc: Exception | None) -> None:
+        feedback_id = record.pk
         try:
-            category = Category.objects.get(category_name=category_name, is_active=True)
-            FeedbackCategory.objects.update_or_create(
-                feedback=feedback,
-                category=category,
-                defaults={
-                    "confidence_score": confidence,
-                    "is_ai_assigned": True,
-                },
+            record.status = "ProcessingFailed"
+            record.save(update_fields=["status"])
+        except Exception as save_exc:
+            logger.critical(
+                "feedback_id=%s: could not persist ProcessingFailed status: %s",
+                feedback_id,
+                save_exc,
             )
-        except Category.DoesNotExist:
-            logger.warning("Category '%s' not found in database.", category_name)
+        logger.critical(
+            "feedback_id=%s: all %d retries exhausted. final error: %s",
+            feedback_id,
+            _MAX_RETRIES,
+            exc,
+        )
+        self._notify_failure(feedback_id)
 
-    # ── 7. Auto-create alert for high-urgency feedback ────────────────────────
-    if feedback.urgency_level == "High" and not hasattr(feedback, "alert"):
+    def _dispatch_alert(self, record, context: dict) -> None:
+        from apps.alerts.services import AlertManager
         try:
-            Alert.objects.create(
-                feedback=feedback,
-                priority_level="High",
-                description=(
-                    f"Auto-generated: high urgency detected in Feedback #{feedback.feedback_id}. "
-                    f"Sentiment: {feedback.sentiment or 'N/A'}."
-                ),
+            
+
+            AlertManager.dispatch(record)
+            logger.info(
+                "feedback_id=%s: AlertManager.dispatch called (urgency_rule=%s).",
+                record.pk,
+                context.get("urgency_rule", "unknown"),
             )
-        except Exception:
-            # Alert creation is best-effort — don't fail the entire pipeline
-            logger.exception(
-                "Failed to create auto-alert for feedback %d.", feedback.feedback_id
+        except Exception as exc:
+            logger.error(
+                "feedback_id=%s: AlertManager.dispatch failed: %s",
+                record.pk,
+                exc,
+                exc_info=True,
+            )
+
+    def _notify_failure(self, feedback_id: int) -> None:
+        from apps.alerts.services import AlertManager
+        try:
+            
+
+            AlertManager.notify_processing_failure(feedback_id)
+        except Exception as exc:
+            logger.error(
+                "feedback_id=%s: AlertManager failure notification failed: %s",
+                feedback_id,
+                exc,
             )

@@ -1,4 +1,4 @@
-"""NLP app Celery tasks."""
+
 from __future__ import annotations
 
 import logging
@@ -9,40 +9,50 @@ from celery import shared_task
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=120)
-def process_feedback_async(self, feedback_id: int) -> None:
-    """Process a single feedback record through the NLP pipeline."""
-    try:
-        from apps.nlp.pipeline.consumer import process_feedback
+@shared_task(bind=True, max_retries=0)
+def process_feedback_nlp(self, feedback_id: int) -> None:
+    
+    from apps.nlp.pipeline.consumer import PipelineConsumer
 
-        process_feedback(feedback_id)
+    logger.info("feedback_id=%s: NLP pipeline task started.", feedback_id)
+    try:
+        PipelineConsumer().run(feedback_id)
     except Exception as exc:
-        logger.exception(
-            "NLP task failed for feedback %d (attempt %d/%d).",
+        
+        logger.critical(
+            "feedback_id=%s: NLP pipeline exhausted all retries: %s",
             feedback_id,
-            self.request.retries + 1,
-            self.max_retries + 1,
+            exc,
+            exc_info=True,
         )
-        raise self.retry(exc=exc)
 
 
-@shared_task
-def run_weekly_theme_clustering() -> dict:
-    """
-    Celery Beat task: generate ThemeCluster records for the previous ISO week.
+@shared_task(bind=True, max_retries=0)
+def run_theme_clustering(self) -> dict:
+    
+    from apps.nlp.pipeline.theme_clusterer import ThemeClusterer
 
-    Runs every Monday at 02:00 UTC so the previous week is fully closed.
-    """
-    from apps.nlp.pipeline.theme_clusterer import save_weekly_clusters
-
-    # Previous Monday
     today = date.today()
-    last_monday = today - timedelta(days=today.weekday() + 7)
+    week_start = today - timedelta(days=today.weekday() + 7)  
 
+    logger.info("ThemeClusterer task started for week %s.", week_start)
     try:
-        count = save_weekly_clusters(last_monday)
-        logger.info("Weekly clustering complete: %d clusters for %s.", count, last_monday)
-        return {"week": str(last_monday), "clusters_created": count}
-    except Exception:
-        logger.exception("Weekly theme clustering failed.")
-        return {"week": str(last_monday), "clusters_created": 0, "error": True}
+        ThemeClusterer().run()
+        logger.info("ThemeClusterer task completed for week %s.", week_start)
+        return {"week": str(week_start), "status": "ok"}
+    except Exception as exc:
+        logger.error("run_theme_clustering task failed: %s", exc, exc_info=True)
+        return {"week": str(week_start), "status": "error"}
+
+
+@shared_task(bind=True, max_retries=0)
+def run_model_retraining(self) -> None:
+    
+    from apps.nlp.pipeline.model_retrainer import ModelRetrainer
+
+    logger.info("ModelRetrainer task started.")
+    try:
+        ModelRetrainer().run()
+        logger.info("ModelRetrainer task completed.")
+    except Exception as exc:
+        logger.error("run_model_retraining task failed: %s", exc, exc_info=True)
