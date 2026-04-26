@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import AIModelLog, ThemeCluster
+from .models import AIModelLog, ThemeCluster, FeedbackCluster
 
 
 @admin.register(AIModelLog)
@@ -16,3 +16,13 @@ class ThemeClusterAdmin(admin.ModelAdmin):
     list_filter = ["week_start_date"]
     readonly_fields = ["cluster_id", "generated_at"]
     ordering = ["-week_start_date", "-feedback_count"]
+
+
+@admin.register(FeedbackCluster)
+class FeedbackClusterAdmin(admin.ModelAdmin):
+    list_display = ["feedback", "cluster", "week_start_date", "assigned_at"]
+    list_filter = ["week_start_date"]
+    readonly_fields = ["assigned_at"]
+    search_fields = ["feedback__feedback_id"]
+    ordering = ["-assigned_at"]
+
