@@ -204,6 +204,9 @@ PHONE_HASH_SALT = os.environ.get("PHONE_HASH_SALT", "")
 # Alias so adapters can try AT_API_KEY first (shorter env var name)
 AT_API_KEY = os.environ.get("AT_API_KEY", AFRICAS_TALKING_API_KEY)
 
+# Skip SMS signature verification (useful for sandbox/local testing)
+AT_SKIP_SMS_SIGNATURE = os.environ.get("AT_SKIP_SMS_SIGNATURE", "").lower() in ("true", "1", "yes")
+
 # ─── AI model paths ──────────────────────────────────────────────────────────
 FASTTEXT_MODEL_PATH = os.environ.get("FASTTEXT_MODEL_PATH", str(BASE_DIR / "models" / "lid.176.bin"))
 

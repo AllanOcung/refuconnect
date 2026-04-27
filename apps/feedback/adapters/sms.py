@@ -131,6 +131,7 @@ class SMSAdapter:
             "text": data.get("text", "").strip(),
             "short_code": data.get("to", ""),
             "link_id": data.get("linkId", ""),
+            "part_number": data.get("partNumber"),
             "message_id": data.get("id", ""),
             "date": data.get("date", ""),
         }
@@ -211,6 +212,7 @@ class SMSWebhookView(APIView):
         parsed = SMSAdapter.parse_incoming(data)
         phone = parsed["phone"]
         link_id = parsed.get("link_id", "")
+        part_number = parsed.get("part_number")
         received_at = datetime.now(stdlib_timezone.utc)
 
         # Stable gateway message ID; fall back to a content hash if absent
@@ -230,7 +232,9 @@ class SMSWebhookView(APIView):
 
         # Step 3: Multi-part SMS assembly
         body = parsed["text"]
-        if link_id:
+        # Some gateway callbacks include linkId even for single-part messages.
+        # Only enter multipart assembly when partNumber is explicitly present.
+        if link_id and str(part_number or "").strip():
             assembled = self._assemble_multipart(
                 phone=phone,
                 link_id=link_id,
@@ -242,6 +246,11 @@ class SMSWebhookView(APIView):
                 # Parts still outstanding — return 200 so AT doesn't retry
                 return Response({"detail": "ok"}, status=status.HTTP_200_OK)
             body = assembled
+        elif link_id:
+            logger.debug(
+                "SMSWebhookView: linkId present without partNumber for message_id=%s; treating as single-part",
+                message_id,
+            )
 
         if not body.strip():
             logger.warning("SMSWebhookView: Empty body after assembly — skipping")
