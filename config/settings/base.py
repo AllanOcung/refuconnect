@@ -209,6 +209,19 @@ AT_SKIP_SMS_SIGNATURE = os.environ.get("AT_SKIP_SMS_SIGNATURE", "").lower() in (
 
 # ─── AI model paths ──────────────────────────────────────────────────────────
 FASTTEXT_MODEL_PATH = os.environ.get("FASTTEXT_MODEL_PATH", str(BASE_DIR / "models" / "lid.176.bin"))
+AFROLID_MODEL_PATH = os.environ.get("AFROLID_MODEL_PATH", str(BASE_DIR / "models" / "afrolid"))
+# Optional external AfroLID microservice URL (e.g. http://afrolid:8000)
+AFROLID_SERVICE_URL = os.environ.get("AFROLID_SERVICE_URL", "")
+
+# ─── Language Detection Thresholds ───────────────────────────────────────────
+# Per-language confidence thresholds for language detection
+LANGUAGE_CONFIDENCE_THRESHOLDS = {
+    "en": 0.85,  # English
+    "sw": 0.85,  # Swahili
+}
+
+# Minimum confidence required to proceed with translation
+LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION = 0.85
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 LOGGING = {

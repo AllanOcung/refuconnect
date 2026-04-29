@@ -1,10 +1,10 @@
 """
-Language detection using fasttext's lid.176.bin model.
+Language detection using fastText with AfroLID fallback.
 
-The model is loaded lazily on first use and cached for the lifetime of the
-worker process.  Set ``FASTTEXT_MODEL_PATH`` in the environment to point to
-the model binary.  If the file does not exist (e.g. in CI), the detector
-falls back gracefully to returning ``('unknown', 0.0, {...})``.
+fastText is loaded lazily on first use and cached for the lifetime of the
+worker process. If the fastText model is missing or returns low confidence,
+AfroLID is attempted as a fallback. If both models are unavailable or fail,
+the detector falls back to returning ``('unknown', 0.0, {...})``.
 """
 from __future__ import annotations
 
@@ -18,9 +18,85 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 _model = None
+_afrolid_model = None
 
 # Supported languages for RefuConnect
-_SUPPORTED_LANGUAGES = {"en", "sw", "lg", "rw", "ar", "fr", "so", "din"}
+_SUPPORTED_LANGUAGES = {"en", "sw"}
+
+_AFROLID_TO_SUPPORTED = {
+    "eng": "en",
+    "swa": "sw",
+    "swh": "sw",
+    "swc": "sw",
+}
+
+# Lightweight lexical hints for cases where fastText is uncertain.
+_SWAHILI_HINT_WORDS = {
+    "aibu",
+    "afya",
+    "habari",
+    "hali",
+    "hewa",
+    "kazi",
+    "kaka",
+    "kijiji",
+    "kununua",
+    "leo",
+    "mimi",
+    "ndio",
+    "nzuri",
+    "pole",
+    "sana",
+    "sokoni",
+    "tafadhali",
+    "wewe",
+    "ya",
+    "yako",
+    "yangu",
+    "yao",
+    "za",
+    "zuri",
+    "chakula",
+    "dawa",
+    "maji",
+    "msaada",
+    "mtu",
+    "nyumba",
+    "sijambo",
+    "sisi",
+    "una",
+    "wana",
+    "wanao",
+    "wapi",
+    "watu",
+    "zote",
+    "nina",
+    "ninaenda",
+    "nime",
+}
+
+_ENGLISH_HINT_WORDS = {
+    "and",
+    "are",
+    "been",
+    "can",
+    "for",
+    "from",
+    "hello",
+    "help",
+    "i",
+    "is",
+    "need",
+    "no",
+    "not",
+    "please",
+    "there",
+    "the",
+    "to",
+    "water",
+    "with",
+    "you",
+}
 
 
 def _get_model():
@@ -49,6 +125,35 @@ def _get_model():
     return _model
 
 
+def _get_afrolid_model():
+    global _afrolid_model
+    if _afrolid_model is not None:
+        return _afrolid_model
+
+    model_path = getattr(settings, "AFROLID_MODEL_PATH", "")
+    if not model_path or not os.path.isdir(model_path):
+        logger.warning(
+            "AfroLID model directory not found at '%s'. AfroLID fallback will be skipped.",
+            model_path,
+        )
+        return None
+
+    try:
+        from afrolid.main import classifier as AfrolidClassifier  # type: ignore[import]
+    except Exception:
+        logger.exception("AfroLID package is not available; fallback skipped.")
+        return None
+
+    try:
+        _afrolid_model = AfrolidClassifier(logger, model_path)
+        logger.info("AfroLID model loaded from %s", model_path)
+    except Exception:
+        logger.exception("Failed to load AfroLID model from %s.", model_path)
+        _afrolid_model = None
+
+    return _afrolid_model
+
+
 def _clean_text(text: str) -> str:
     """Clean text: remove URLs, collapse whitespace, strip."""
     # Remove URLs (http, https, www patterns)
@@ -58,6 +163,97 @@ def _clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     # Strip leading/trailing whitespace
     return text.strip()
+
+
+def _heuristic_language_score(text: str) -> tuple[str, float, dict]:
+    """Use simple word hints to catch obvious English or Swahili messages."""
+    tokens = re.findall(r"[a-z']+", text.lower())
+    if not tokens:
+        return "unknown", 0.0, {"needs_language_review": False, "top_predictions": []}
+
+    sw_hits = sum(token in _SWAHILI_HINT_WORDS for token in tokens)
+    en_hits = sum(token in _ENGLISH_HINT_WORDS for token in tokens)
+
+    if sw_hits == 0 and en_hits == 0:
+        return "unknown", 0.0, {"needs_language_review": False, "top_predictions": []}
+
+    if sw_hits >= en_hits and sw_hits >= 2:
+        confidence = min(0.84, 0.55 + (0.08 * sw_hits) + (0.02 * len(tokens)))
+        confidence = round(confidence, 4)
+        return "sw", confidence, {
+            "needs_language_review": True,
+            "top_predictions": [("sw", confidence), ("en", round(max(0.0, 1.0 - confidence), 4))],
+        }
+
+    if en_hits > sw_hits and en_hits >= 2:
+        confidence = min(0.84, 0.55 + (0.08 * en_hits) + (0.02 * len(tokens)))
+        confidence = round(confidence, 4)
+        return "en", confidence, {
+            "needs_language_review": True,
+            "top_predictions": [("en", confidence), ("sw", round(max(0.0, 1.0 - confidence), 4))],
+        }
+
+    return "unknown", 0.0, {"needs_language_review": False, "top_predictions": []}
+
+
+def _normalize_afrolid_label(label: str) -> str:
+    label = (label or "").strip().lower()
+    if label in _SUPPORTED_LANGUAGES:
+        return label
+    return _AFROLID_TO_SUPPORTED.get(label, "unknown")
+
+
+def _detect_with_afrolid(text: str) -> tuple[str, float, dict]:
+    """Run AfroLID and map its output to RefuConnect's supported codes."""
+    # Prefer remote afrolid microservice if configured, to isolate heavy deps.
+    service_url = getattr(settings, "AFROLID_SERVICE_URL", "")
+    if service_url:
+        try:
+            import requests
+
+            resp = requests.post(f"{service_url.rstrip('/')}/detect", json={"text": text}, timeout=3.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                lang = data.get("language", "unknown")
+                confidence = float(data.get("confidence", 0.0))
+                top = data.get("top_predictions", [])
+                return _normalize_afrolid_label(lang), round(confidence, 4), {
+                    "needs_language_review": data.get("needs_language_review", False),
+                    "top_predictions": top,
+                }
+        except Exception:
+            logger.exception("Failed to call AfroLID service at %s", service_url)
+
+    model = _get_afrolid_model()
+    review_flags = {
+        "needs_language_review": False,
+        "top_predictions": [],
+    }
+
+    if model is None:
+        return "unknown", 0.0, review_flags
+
+    try:
+        results = model.classify(text, max_outputs=3)
+    except Exception:
+        logger.exception("AfroLID classification failed for text snippet.")
+        return "unknown", 0.0, review_flags
+
+    predictions: list[tuple[str, float]] = []
+    for label, meta in results.items():
+        mapped_label = _normalize_afrolid_label(label)
+        score = float(meta.get("score", 0.0)) / 100.0
+        predictions.append((mapped_label, round(score, 4)))
+
+    review_flags["top_predictions"] = predictions
+    for lang, confidence in predictions:
+        if lang in _SUPPORTED_LANGUAGES:
+            if confidence < getattr(settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.85):
+                review_flags["needs_language_review"] = True
+            return lang, confidence, review_flags
+
+    review_flags["needs_language_review"] = True
+    return "unknown", 0.0, review_flags
 
 
 def detect_language(
@@ -75,7 +271,7 @@ def detect_language(
     Returns
     -------
     (language_code, confidence, review_flags_dict)
-        language_code: BCP 47 tag (e.g. 'en', 'sw', 'lg') or 'unknown'.
+        language_code: BCP 47 tag (e.g. 'en', 'sw') or 'unknown'.
         confidence: float in [0, 1].
         review_flags_dict: Dict with 'needs_language_review' bool and top 3 predictions list.
     """
@@ -96,34 +292,69 @@ def detect_language(
         return "unknown", 0.0, review_flags
 
     model = _get_model()
-    if model is None:
-        return "unknown", 0.0, review_flags
 
     # Limit to 1000 characters to cap processing time
     text = text[:1000]
 
-    try:
-        labels, probs = model.predict(text, k=3)
-        predictions = []
-        for label, prob in zip(labels, probs):
-            lang = label.replace("__label__", "")
-            confidence = float(prob)
-            predictions.append((lang, round(confidence, 4)))
+    confidence_thresholds = getattr(settings, "LANGUAGE_CONFIDENCE_THRESHOLDS", {})
 
-        # Return top prediction if in supported set, otherwise unknown
-        for lang, confidence in predictions:
-            if lang in _SUPPORTED_LANGUAGES:
-                review_flags["top_predictions"] = predictions
-                # Set review flag if confidence below 0.85
-                if confidence < 0.85:
+    if model is not None:
+        try:
+            labels, probs = model.predict(text, k=3)
+            predictions = []
+            for label, prob in zip(labels, probs):
+                lang = label.replace("__label__", "")
+                confidence = float(prob)
+                predictions.append((lang, round(confidence, 4)))
+
+            # Return the first supported fastText prediction if it is confident enough.
+            for lang, confidence in predictions:
+                if lang in _SUPPORTED_LANGUAGES:
+                    review_flags["top_predictions"] = predictions
+                    threshold = confidence_thresholds.get(lang, 0.85)
+                    if confidence >= threshold:
+                        return lang, confidence, review_flags
+
+                    # FastText is uncertain, so fall through to AfroLID.
                     review_flags["needs_language_review"] = True
-                return lang, confidence, review_flags
+                    afrolid_lang, afrolid_confidence, afrolid_flags = _detect_with_afrolid(text)
+                    if afrolid_lang in _SUPPORTED_LANGUAGES:
+                        afrolid_flags["top_predictions"] = afrolid_flags.get("top_predictions", []) or review_flags["top_predictions"]
+                        afrolid_flags["needs_language_review"] = True
+                        return afrolid_lang, afrolid_confidence, afrolid_flags
 
-        # Top prediction not in supported set
-        review_flags["top_predictions"] = predictions
-        review_flags["needs_language_review"] = True
-        return "unknown", 0.0, review_flags
+                    heuristic_lang, heuristic_confidence, heuristic_flags = _heuristic_language_score(text)
+                    if heuristic_lang in _SUPPORTED_LANGUAGES:
+                        heuristic_flags["top_predictions"] = heuristic_flags.get("top_predictions", []) or review_flags["top_predictions"]
+                        return heuristic_lang, heuristic_confidence, heuristic_flags
 
-    except Exception:
-        logger.exception("Language detection failed for text snippet.")
-        return "unknown", 0.0, review_flags
+                    return lang, confidence, review_flags
+
+            # FastText found no supported language, so try AfroLID next.
+            review_flags["top_predictions"] = predictions
+            afrolid_lang, afrolid_confidence, afrolid_flags = _detect_with_afrolid(text)
+            if afrolid_lang in _SUPPORTED_LANGUAGES:
+                afrolid_flags["top_predictions"] = afrolid_flags.get("top_predictions", []) or predictions
+                return afrolid_lang, afrolid_confidence, afrolid_flags
+
+            heuristic_lang, heuristic_confidence, heuristic_flags = _heuristic_language_score(text)
+            if heuristic_lang in _SUPPORTED_LANGUAGES:
+                heuristic_flags["top_predictions"] = heuristic_flags.get("top_predictions", []) or predictions
+                return heuristic_lang, heuristic_confidence, heuristic_flags
+
+            review_flags["needs_language_review"] = True
+            return "unknown", 0.0, review_flags
+
+        except Exception:
+            logger.exception("Language detection failed for text snippet.")
+
+    # FastText unavailable or failed, so try AfroLID first and then heuristics.
+    afrolid_lang, afrolid_confidence, afrolid_flags = _detect_with_afrolid(text)
+    if afrolid_lang in _SUPPORTED_LANGUAGES:
+        return afrolid_lang, afrolid_confidence, afrolid_flags
+
+    heuristic_lang, heuristic_confidence, heuristic_flags = _heuristic_language_score(text)
+    if heuristic_lang in _SUPPORTED_LANGUAGES:
+        return heuristic_lang, heuristic_confidence, heuristic_flags
+
+    return "unknown", 0.0, review_flags

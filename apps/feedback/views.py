@@ -28,6 +28,7 @@ from .models import Feedback
 from .serializers import (
     FeedbackDetailSerializer,
     FeedbackListSerializer,
+    LanguageReviewSerializer,
 )
 
 logger = logging.getLogger("refuconnect.feedback.views")
@@ -126,4 +127,42 @@ class FeedbackFlagView(APIView):
         return Response(
             {"feedback_id": pk, "is_flagged": feedback.is_flagged},
             status=status.HTTP_200_OK,
+        )
+
+
+class LanguageDetectionReviewView(generics.ListAPIView):
+    """
+    List feedback records that need language detection review.
+    
+    Includes:
+      - Feedbacks with language = 'unknown'
+      - Feedbacks with language_confidence < 0.85
+    
+    This helps operators identify messages where automatic language detection
+    was uncertain and may need manual verification or re-classification.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = LanguageReviewSerializer
+    search_fields = ["message_text", "location", "anonymous_user_id"]
+    ordering_fields = ["submitted_at", "language_confidence"]
+    ordering = ["language_confidence", "-submitted_at"]
+
+    def get_queryset(self):
+        from django.conf import settings
+        from django.db.models import Q
+        
+        threshold = getattr(settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.85)
+        return (
+            Feedback.objects.select_related("sentiment")
+            .filter(
+                Q(language="unknown") | 
+                Q(language_confidence__lt=threshold)
+            )
+            .only(
+                "feedback_id", "channel", "language", "language_confidence",
+                "urgency_level", "status", "is_flagged", "location",
+                "submitted_at", "message_text", "sentiment__sentiment_label",
+            )
+            .order_by("language_confidence", "-submitted_at")
         )

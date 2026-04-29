@@ -80,6 +80,29 @@ class FeedbackListSerializer(serializers.ModelSerializer):
         ]
 
 
+class LanguageReviewSerializer(serializers.ModelSerializer):
+    """Serializer for feedback rows that need language review."""
+
+    sentiment_label = serializers.ReadOnlyField(source="sentiment.sentiment_label")
+
+    class Meta:
+        model = Feedback
+        fields = [
+            "feedback_id",
+            "channel",
+            "language",
+            "language_confidence",
+            "urgency_level",
+            "status",
+            "is_flagged",
+            "is_duplicate",
+            "sentiment_label",
+            "location",
+            "message_text",
+            "submitted_at",
+        ]
+
+
 class FeedbackDetailSerializer(serializers.ModelSerializer):
     """Full serializer for create / retrieve operations."""
 

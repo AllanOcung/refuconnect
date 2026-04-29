@@ -21,6 +21,7 @@ from .views import (
     FeedbackDetailView,
     FeedbackFlagView,
     FeedbackListView,
+    LanguageDetectionReviewView,
 )
 
 app_name = "feedback"
@@ -33,6 +34,7 @@ urlpatterns = [
 
     # ── Authenticated dashboard endpoints ───────────────────────────────────
     path("", FeedbackListView.as_view(), name="feedback-list"),
+    path("language-review/", LanguageDetectionReviewView.as_view(), name="language-review"),
     path("<int:pk>/", FeedbackDetailView.as_view(), name="feedback-detail"),
     path("<int:pk>/flag/", FeedbackFlagView.as_view(), name="feedback-flag"),
 ]

@@ -73,20 +73,28 @@ class TestLanguageDetector:
             assert lang == "unknown"
             assert flags["needs_language_review"]
 
-    def test_low_confidence_flags_review(self):
-        """Confidence < 0.85 should set needs_language_review."""
+    def test_low_confidence_uses_afrolid_fallback(self):
+        """Low-confidence fastText output should fall back to AfroLID."""
         text = "This is a test message for language detection"
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
-            mock_instance = MagicMock()
-            mock_instance.predict.return_value = (
+        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model, \
+            patch("apps.nlp.pipeline.language_detector._get_afrolid_model") as mock_afrolid_model:
+            mock_fasttext = MagicMock()
+            mock_fasttext.predict.return_value = (
                 ["__label__en", "__label__fr", "__label__de"],
                 [0.78, 0.15, 0.07],
             )
-            mock_model.return_value = mock_instance
+            mock_model.return_value = mock_fasttext
+
+            mock_afrolid = MagicMock()
+            mock_afrolid.classify.return_value = {
+                "eng": {"score": 82.0, "name": "English", "script": "Latin"},
+                "swa": {"score": 9.0, "name": "Swahili", "script": "Latin"},
+            }
+            mock_afrolid_model.return_value = mock_afrolid
 
             lang, confidence, flags = detect_language(text)
             assert lang == "en"
-            assert confidence == 0.78
+            assert confidence == 0.82
             assert flags["needs_language_review"]
 
     def test_high_confidence_no_review_flag(self):
@@ -137,22 +145,54 @@ class TestLanguageDetector:
             assert lang == "sw"
             assert confidence == 0.88
 
-    def test_luganda_detected(self):
-        """Luganda should be recognized as supported language."""
-        text = "Obuwanvu bw'okukola kino kyava mu kwata oba okusaanira?"
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
-            mock_instance = MagicMock()
-            mock_instance.predict.return_value = (
-                ["__label__lg", "__label__sw", "__label__en"],
-                [0.87, 0.10, 0.03],
+    def test_swahili_phrase_overrides_weak_fasttext_prediction(self):
+        """Swahili should come from AfroLID when fastText is weak."""
+        text = "Fanya kazi nzuri"
+        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model, \
+            patch("apps.nlp.pipeline.language_detector._get_afrolid_model") as mock_afrolid_model:
+            mock_fasttext = MagicMock()
+            mock_fasttext.predict.return_value = (
+                ["__label__en", "__label__sw", "__label__vo"],
+                [0.23, 0.22, 0.06],
             )
-            mock_model.return_value = mock_instance
+            mock_model.return_value = mock_fasttext
+
+            mock_afrolid = MagicMock()
+            mock_afrolid.classify.return_value = {
+                "swa": {"score": 91.0, "name": "Swahili", "script": "Latin"},
+                "eng": {"score": 8.0, "name": "English", "script": "Latin"},
+            }
+            mock_afrolid_model.return_value = mock_afrolid
 
             lang, confidence, flags = detect_language(text)
-            assert lang == "lg"
+            assert lang == "sw"
+            assert confidence == 0.91
 
-    def test_arabic_detected(self):
-        """Arabic should be recognized as supported language."""
+    def test_swahili_phrase_falls_back_from_unsupported_predictions(self):
+        """Common Swahili text should recover even when fastText misses it."""
+        text = "Ninaenda sokoni kununua matunda"
+        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model, \
+            patch("apps.nlp.pipeline.language_detector._get_afrolid_model") as mock_afrolid_model:
+            mock_fasttext = MagicMock()
+            mock_fasttext.predict.return_value = (
+                ["__label__nl", "__label__eo", "__label__id"],
+                [0.18, 0.15, 0.13],
+            )
+            mock_model.return_value = mock_fasttext
+
+            mock_afrolid = MagicMock()
+            mock_afrolid.classify.return_value = {
+                "swa": {"score": 88.0, "name": "Swahili", "script": "Latin"},
+                "eng": {"score": 7.0, "name": "English", "script": "Latin"},
+            }
+            mock_afrolid_model.return_value = mock_afrolid
+
+            lang, confidence, flags = detect_language(text)
+            assert lang == "sw"
+            assert confidence == 0.88
+
+    def test_unsupported_language_still_returns_unknown(self):
+        """Unsupported languages should still return unknown."""
         text = "مرحبا بك في برنامج جمع التغذية الراجعة"
         with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
             mock_instance = MagicMock()
@@ -163,7 +203,8 @@ class TestLanguageDetector:
             mock_model.return_value = mock_instance
 
             lang, confidence, flags = detect_language(text)
-            assert lang == "ar"
+            assert lang == "unknown"
+            assert confidence == 0.0
 
     def test_text_cleaning_removes_urls(self):
         """URLs should be removed during text cleaning."""
@@ -253,44 +294,17 @@ class TestLanguageDetector:
             lang, confidence, flags = detect_language(text)
             assert lang == "en"
 
-    def test_kinyarwanda_supported(self):
-        """Kinyarwanda (rw) should be in supported languages."""
+    def test_non_supported_language_stays_unknown(self):
+        """Non-English and non-Swahili outputs should be rejected."""
         text = "Ici ni umwanzo w'igitangazo"
         with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
             mock_instance = MagicMock()
             mock_instance.predict.return_value = (
-                ["__label__rw", "__label__en", "__label__sw"],
+                ["__label__rw", "__label__sw", "__label__en"],
                 [0.85, 0.10, 0.05],
             )
             mock_model.return_value = mock_instance
 
             lang, confidence, flags = detect_language(text)
-            assert lang == "rw"
-
-    def test_somali_supported(self):
-        """Somali (so) should be in supported languages."""
-        text = "Salaam waalaykum, iska warran"
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
-            mock_instance = MagicMock()
-            mock_instance.predict.return_value = (
-                ["__label__so", "__label__ar", "__label__en"],
-                [0.86, 0.10, 0.04],
-            )
-            mock_model.return_value = mock_instance
-
-            lang, confidence, flags = detect_language(text)
-            assert lang == "so"
-
-    def test_dinka_supported(self):
-        """Dinka (din) should be in supported languages."""
-        text = "Laal aye dit"
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
-            mock_instance = MagicMock()
-            mock_instance.predict.return_value = (
-                ["__label__din", "__label__en", "__label__ar"],
-                [0.84, 0.12, 0.04],
-            )
-            mock_model.return_value = mock_instance
-
-            lang, confidence, flags = detect_language(text)
-            assert lang == "din"
+            assert lang == "unknown"
+            assert confidence == 0.0

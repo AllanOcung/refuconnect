@@ -38,7 +38,6 @@ _MAX_MESSAGE_LENGTH: int = 160
 _LANGUAGE_MAP: dict[str, str] = {
     "1": "en",
     "2": "sw",
-    "3": "lg",
 }
 
 _CATEGORY_MAP: dict[str, str] = {
@@ -55,8 +54,7 @@ _STEP_0_MENU = (
     "RefuConnect\n"
     "Select language:\n"
     "1. English\n"
-    "2. Swahili\n"
-    "3. Luganda"
+    "2. Swahili"
 )
 
 _STEP_1_MENU = (

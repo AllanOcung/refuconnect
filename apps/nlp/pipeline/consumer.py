@@ -173,9 +173,17 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
 
     # ── 1. Language detection ─────────────────────────────────────────────────
     try:
-        language, lang_confidence = detect_language(feedback.message_text)
+        # Use USSD language hint if available (trust user selection)
+        ussd_hint = feedback.language if feedback.channel == "USSD" and feedback.language != "unknown" else None
+        language, lang_confidence, review_flags = detect_language(
+            feedback.message_text, 
+            ussd_language=ussd_hint
+        )
         feedback.language = language
         feedback.language_confidence = lang_confidence
+        # Merge review flags if language detection flagged for review
+        if review_flags.get("needs_language_review"):
+            context.set_review_flag("needs_language_review")
     except Exception as exc:
         context.mark_component_failed("LanguageDetector", exc)
         # Set defaults and continue
@@ -184,9 +192,22 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
 
     # ── 2. Translation to English ─────────────────────────────────────────────
     try:
-        if feedback.language not in ("en", "unknown"):
+        from django.conf import settings
+        
+        # Determine if we should translate
+        should_translate = (
+            feedback.language not in ("en", "unknown") 
+            and feedback.language_confidence is not None
+            and feedback.language_confidence >= getattr(settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.85)
+        )
+        
+        if should_translate:
             english_text = translate_to_english(feedback.message_text, feedback.language)
         else:
+            # For low-confidence detections, use original text and flag for review
+            if feedback.language not in ("en", "unknown") and feedback.language_confidence is not None:
+                if feedback.language_confidence < getattr(settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.85):
+                    context.set_review_flag("low_confidence_translation_skipped")
             english_text = feedback.message_text
         feedback.message_text_en = english_text
     except Exception as exc:
