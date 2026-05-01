@@ -92,32 +92,32 @@ class TestPipelineConsumer:
             assert feedback.processed_at is not None
 
     def test_all_pipeline_components_called_in_order(self, feedback):
-        """All 7 pipeline components should be called in correct order."""
+        """C-05 pipeline order: Language → Translation → Topic → Urgency → Sentiment → Location."""
         call_order = []
 
         def mock_detect(text):
             call_order.append("detect_language")
-            return "sw", 0.95  # Return non-English language to trigger translation
+            return "sw", 0.95  # Non-English to trigger translation
 
-        def mock_translate(text, lang):
+        def mock_translate(text, lang, ctx_dict=None):
             call_order.append("translate")
-            return text
+            return text  # plain string return — handled by consumer
 
-        def mock_sentiment(text):
-            call_order.append("sentiment")
-            return None, 0.0
+        def mock_classify(text):
+            call_order.append("classify_topics")
+            return [], {}
 
         def mock_urgency(text):
             call_order.append("urgency")
             return "Low", "default"
 
+        def mock_sentiment(text):
+            call_order.append("sentiment")
+            return None, 0.0
+
         def mock_location(text):
             call_order.append("location")
             return None
-
-        def mock_classify(text):
-            call_order.append("classify_topics")
-            return []
 
         with mock.patch(
             "apps.nlp.pipeline.language_detector.detect_language",
@@ -126,60 +126,49 @@ class TestPipelineConsumer:
             "apps.nlp.pipeline.translation_service.translate_to_english",
             side_effect=mock_translate,
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
-            side_effect=mock_sentiment,
+            "apps.nlp.pipeline.topic_classifier.classify_topics",
+            side_effect=mock_classify,
         ), mock.patch(
             "apps.nlp.pipeline.urgency_assessor.assess_urgency",
             side_effect=mock_urgency,
         ), mock.patch(
+            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
+            side_effect=mock_sentiment,
+        ), mock.patch(
             "apps.nlp.pipeline.location_extractor.extract_location",
             side_effect=mock_location,
-        ), mock.patch(
-            "apps.nlp.pipeline.topic_classifier.classify_topics",
-            side_effect=mock_classify,
         ):
             process_feedback(feedback.feedback_id)
 
         assert call_order == [
             "detect_language",
             "translate",
-            "sentiment",
-            "urgency",
-            "location",
             "classify_topics",
+            "urgency",
+            "sentiment",
+            "location",
         ]
 
-    def test_component_failure_logged_and_continued(self, feedback):
-        """Component failure should be logged; pipeline should continue."""
+    def test_component_failure_causes_processing_failed(self, feedback):
+        """Any component raising must propagate, retry, and ultimately produce ProcessingFailed."""
         with mock.patch(
             "apps.nlp.pipeline.language_detector.detect_language",
             side_effect=ValueError("Model not found"),
         ), mock.patch(
-            "apps.nlp.pipeline.translation_service.translate_to_english",
-            return_value=("text", {})
+            "apps.nlp.pipeline.consumer.time.sleep"
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
-            return_value=(None, 0.0)
-        ), mock.patch(
-            "apps.nlp.pipeline.urgency_assessor.assess_urgency",
-            return_value=("Low", "default"),
-        ), mock.patch(
-            "apps.nlp.pipeline.location_extractor.extract_location",
-            return_value=("Location", 0.9, "settlement")
-        ), mock.patch(
-            "apps.nlp.pipeline.topic_classifier.classify_topics",
-            return_value=([],  {})
-        ):
-            process_feedback(feedback.feedback_id)
-            feedback.refresh_from_db()
-            # Should still succeed (graceful degradation)
-            assert feedback.status == "Processed"
-            # Language should be set to defaults due to failure
-            assert feedback.language == "unknown"
-            assert feedback.language_confidence == 0.0
+            "apps.nlp.pipeline.alert_manager.AlertManager.dispatch"
+        ) as mock_alert:
+            with pytest.raises(ValueError):
+                process_feedback(feedback.feedback_id)
+
+        feedback.refresh_from_db()
+        assert feedback.status == "ProcessingFailed"
+        # AlertManager must be notified on terminal failure
+        mock_alert.assert_called_once()
 
     def test_alert_created_for_high_urgency(self, feedback):
-        """High-urgency feedback should trigger auto-alert creation."""
+        """High-urgency feedback should trigger auto-alert creation after save."""
         with mock.patch(
             "apps.nlp.pipeline.language_detector.detect_language",
             return_value=("en", 0.95),
@@ -187,24 +176,25 @@ class TestPipelineConsumer:
             "apps.nlp.pipeline.translation_service.translate_to_english",
             return_value="emergency! help needed!",
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
-            return_value=(None, 0.0),
+            "apps.nlp.pipeline.topic_classifier.classify_topics",
+            return_value=([], {}),
         ), mock.patch(
             "apps.nlp.pipeline.urgency_assessor.assess_urgency",
             return_value=("High", "keyword:emergency"),
         ), mock.patch(
+            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
+            return_value=(None, 0.0),
+        ), mock.patch(
             "apps.nlp.pipeline.location_extractor.extract_location",
             return_value=None,
-        ), mock.patch(
-            "apps.nlp.pipeline.topic_classifier.classify_topics",
-            return_value=[],
         ):
             process_feedback(feedback.feedback_id)
 
-            # Alert should exist
-            alert = Alert.objects.get(feedback=feedback)
-            assert alert.priority_level == "High"
-            assert "emergency" in alert.description.lower()
+        feedback.refresh_from_db()
+        assert feedback.status == "Processed"
+        alert = Alert.objects.get(feedback=feedback)
+        assert alert.priority_level == "High"
+        assert "emergency" in alert.description.lower()
 
     def test_no_alert_for_low_urgency(self, feedback):
         """Low-urgency feedback should not create an alert."""
@@ -213,24 +203,23 @@ class TestPipelineConsumer:
             return_value=("en", 0.95),
         ), mock.patch(
             "apps.nlp.pipeline.translation_service.translate_to_english",
-            return_value=("text", {})
+            return_value=("text", {}),
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
-            return_value=(None, 0.0),
+            "apps.nlp.pipeline.topic_classifier.classify_topics",
+            return_value=([], {}),
         ), mock.patch(
             "apps.nlp.pipeline.urgency_assessor.assess_urgency",
             return_value=("Low", "default"),
         ), mock.patch(
-            "apps.nlp.pipeline.location_extractor.extract_location",
-            return_value=("Location", 0.9, "settlement")
+            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
+            return_value=(None, 0.0),
         ), mock.patch(
-            "apps.nlp.pipeline.topic_classifier.classify_topics",
-            return_value=([], {})
+            "apps.nlp.pipeline.location_extractor.extract_location",
+            return_value=("Location", 0.9, "settlement"),
         ):
             process_feedback(feedback.feedback_id)
 
-            # No alert should exist
-            assert not Alert.objects.filter(feedback=feedback).exists()
+        assert not Alert.objects.filter(feedback=feedback).exists()
 
     def test_retry_logic_with_exponential_backoff(self, feedback):
         """Failed attempts should retry with correct delays (30s, 120s, 300s)."""
@@ -284,16 +273,6 @@ class TestPipelineConsumer:
 class TestPipelineContext:
     """Test suite for PipelineContext."""
 
-    def test_context_tracks_component_failures(self):
-        """Context should track and log component failures."""
-        ctx = PipelineContext(feedback_id=1)
-        exc = ValueError("Test error")
-        ctx.mark_component_failed("TestComponent", exc)
-
-        assert "TestComponent" in ctx.component_failures
-        assert "ValueError" in ctx.component_failures["TestComponent"]
-        assert "Test error" in ctx.component_failures["TestComponent"]
-
     def test_context_tracks_review_flags(self):
         """Context should track review flags."""
         ctx = PipelineContext(feedback_id=1)
@@ -309,3 +288,10 @@ class TestPipelineContext:
         assert ctx.translation_failed is False
         ctx.translation_failed = True
         assert ctx.translation_failed is True
+
+    def test_context_urgency_rule_stored(self):
+        """Context should store the urgency rule matched by UrgencyAssessor."""
+        ctx = PipelineContext(feedback_id=42)
+        assert ctx.urgency_rule is None
+        ctx.urgency_rule = "keyword:emergency"
+        assert ctx.urgency_rule == "keyword:emergency"

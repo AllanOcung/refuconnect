@@ -44,25 +44,28 @@ class TestLanguageDetector:
             assert confidence == 0.95
 
     def test_short_text_returns_unknown(self):
-        """Text < 10 chars should return unknown."""
+        """Text < 10 chars must return unknown, confidence=0.50 and flag review (C-06 §2)."""
         text = "hi"
         lang, confidence, flags = detect_language(text)
         assert lang == "unknown"
-        assert confidence == 0.0
+        assert confidence == 0.50
+        assert flags["needs_language_review"] is True
 
     def test_short_text_with_spaces_stripped(self):
-        """Short text with leading spaces should be stripped then checked."""
-        text = "  abc  "  # 7 chars after strip
+        """Short text (after stripping) must also return 0.50 and flag review."""
+        text = "  abc  "  # 3 chars after strip
         lang, confidence, flags = detect_language(text)
         assert lang == "unknown"
-        assert confidence == 0.0
+        assert confidence == 0.50
+        assert flags["needs_language_review"] is True
 
-    def test_unsupported_language_filtered(self):
-        """Unsupported languages should return unknown with review flag."""
+    def test_unsupported_language_returns_other(self):
+        """Unsupported fastText top-1 + AfroLID miss → language='other' (C-06 §4)."""
         text = "This is a test message for language detection"
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
+        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model, \
+            patch("apps.nlp.pipeline.language_detector._detect_with_afrolid",
+                  return_value=("unknown", 0.0, {"needs_language_review": True, "top_predictions": []})):
             mock_instance = MagicMock()
-            # Simulate unsupported language in top prediction
             mock_instance.predict.return_value = (
                 ["__label__zh", "__label__ja", "__label__ko"],
                 [0.92, 0.05, 0.03],
@@ -70,7 +73,8 @@ class TestLanguageDetector:
             mock_model.return_value = mock_instance
 
             lang, confidence, flags = detect_language(text)
-            assert lang == "unknown"
+            assert lang == "other"
+            assert confidence == 0.92
             assert flags["needs_language_review"]
 
     def test_low_confidence_uses_afrolid_fallback(self):
@@ -191,10 +195,12 @@ class TestLanguageDetector:
             assert lang == "sw"
             assert confidence == 0.88
 
-    def test_unsupported_language_still_returns_unknown(self):
-        """Unsupported languages should still return unknown."""
+    def test_unsupported_language_still_returns_other(self):
+        """Arabic text (unsupported top-1, AfroLID miss) → language='other'."""
         text = "مرحبا بك في برنامج جمع التغذية الراجعة"
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
+        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model, \
+            patch("apps.nlp.pipeline.language_detector._detect_with_afrolid",
+                  return_value=("unknown", 0.0, {"needs_language_review": True, "top_predictions": []})):
             mock_instance = MagicMock()
             mock_instance.predict.return_value = (
                 ["__label__ar", "__label__en", "__label__fr"],
@@ -203,8 +209,8 @@ class TestLanguageDetector:
             mock_model.return_value = mock_instance
 
             lang, confidence, flags = detect_language(text)
-            assert lang == "unknown"
-            assert confidence == 0.0
+            assert lang == "other"
+            assert confidence == 0.91
 
     def test_text_cleaning_removes_urls(self):
         """URLs should be removed during text cleaning."""
@@ -294,10 +300,12 @@ class TestLanguageDetector:
             lang, confidence, flags = detect_language(text)
             assert lang == "en"
 
-    def test_non_supported_language_stays_unknown(self):
-        """Non-English and non-Swahili outputs should be rejected."""
+    def test_non_supported_language_returns_other(self):
+        """Non-English/non-Swahili fastText output → language='other' (C-06 §4)."""
         text = "Ici ni umwanzo w'igitangazo"
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
+        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model, \
+            patch("apps.nlp.pipeline.language_detector._detect_with_afrolid",
+                  return_value=("unknown", 0.0, {"needs_language_review": True, "top_predictions": []})):
             mock_instance = MagicMock()
             mock_instance.predict.return_value = (
                 ["__label__rw", "__label__sw", "__label__en"],
@@ -306,5 +314,5 @@ class TestLanguageDetector:
             mock_model.return_value = mock_instance
 
             lang, confidence, flags = detect_language(text)
-            assert lang == "unknown"
-            assert confidence == 0.0
+            assert lang == "other"
+            assert confidence == 0.85

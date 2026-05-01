@@ -27,9 +27,17 @@ class NlpConfig(AppConfig):
         else:
             logger.info("✓ fastText model available at %s", model_path)
 
-        # Check optional AfroLID model directory
+        # Check AfroLID fallback mode (service preferred, local model optional)
+        afrolid_service_url = getattr(settings, "AFROLID_SERVICE_URL", "")
         afrolid_model_path = getattr(settings, "AFROLID_MODEL_PATH", "")
-        if afrolid_model_path and os.path.isdir(afrolid_model_path):
-            logger.info("✓ AfroLID model directory available at %s", afrolid_model_path)
+        afrolid_model_file = os.path.join(afrolid_model_path, "lid.176.bin") if afrolid_model_path else ""
+
+        if afrolid_service_url:
+            logger.info("✓ AfroLID service configured at %s", afrolid_service_url)
+        elif afrolid_model_file and os.path.isfile(afrolid_model_file):
+            logger.info("✓ AfroLID local model available at %s", afrolid_model_file)
         else:
-            logger.info("AfroLID fallback not configured at %s", afrolid_model_path)
+            logger.info(
+                "AfroLID fallback not configured (service URL empty and local model missing at %s)",
+                afrolid_model_file or afrolid_model_path,
+            )

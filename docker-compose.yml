@@ -4,6 +4,7 @@ x-django-env: &django-env
   environment:
     DJANGO_SETTINGS_MODULE: config.settings.development
     AT_SKIP_SMS_SIGNATURE: "True"
+    AFROLID_SERVICE_URL: http://afrolid:8000
 
 services:
   db:

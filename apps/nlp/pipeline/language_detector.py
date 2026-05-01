@@ -73,6 +73,13 @@ _SWAHILI_HINT_WORDS = {
     "nina",
     "ninaenda",
     "nime",
+    "lakini",
+    "mtu",
+    "watu",
+    "yeyote",
+    "mapema",
+    "alifika",
+    "hakukuta",
 }
 
 _ENGLISH_HINT_WORDS = {
@@ -287,9 +294,9 @@ def detect_language(
     # Clean text
     text = _clean_text(text)
 
-    # Short text detection
+    # Short text detection — model is unreliable under 10 chars (C-06 §2)
     if len(text) < 10:
-        return "unknown", 0.0, review_flags
+        return "unknown", 0.50, {"needs_language_review": True, "top_predictions": []}
 
     model = _get_model()
 
@@ -331,14 +338,26 @@ def detect_language(
 
                 return top_lang, top_confidence, review_flags
 
-            # FastText top-1 is unsupported, so try AfroLID next.
+            # FastText top-1 is unsupported; try AfroLID before giving up.
             afrolid_lang, afrolid_confidence, afrolid_flags = _detect_with_afrolid(text)
             if afrolid_lang in _SUPPORTED_LANGUAGES:
                 afrolid_flags["top_predictions"] = afrolid_flags.get("top_predictions", []) or predictions
                 return afrolid_lang, afrolid_confidence, afrolid_flags
 
+            # Tertiary lexical fallback for low-confidence unsupported outputs.
+            # This helps recover obvious en/sw phrases misclassified as nearby languages.
+            if top_confidence < 0.90:
+                heuristic_lang, heuristic_confidence, heuristic_flags = _heuristic_language_score(text)
+                if heuristic_lang in _SUPPORTED_LANGUAGES:
+                    heuristic_flags["top_predictions"] = (
+                        heuristic_flags.get("top_predictions", []) or predictions
+                    )
+                    heuristic_flags["needs_language_review"] = True
+                    return heuristic_lang, heuristic_confidence, heuristic_flags
+
+            # Both models agree it's not a supported language (C-06 §4).
             review_flags["needs_language_review"] = True
-            return "unknown", 0.0, review_flags
+            return "other", top_confidence, review_flags
 
         except Exception:
             logger.exception("Language detection failed for text snippet.")
