@@ -169,8 +169,8 @@ class MessageNormaliser:
 
         # ── Step 6: Enqueue NLP task ───────────────────────────────────────
         try:
-            from apps.nlp.tasks import process_feedback_async
-            process_feedback_async.delay(feedback_id)
+            from apps.nlp.tasks import process_feedback_nlp
+            process_feedback_nlp.delay(feedback_id)
         except Exception:
             logger.exception(
                 "MessageNormaliser: Failed to enqueue NLP task for feedback_id=%d",

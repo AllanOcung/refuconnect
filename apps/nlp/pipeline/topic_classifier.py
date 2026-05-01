@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Optional
+
+from filelock import FileLock, Timeout
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,20 @@ _tokenizer = None
 _DEFAULT_MODEL = "facebook/bart-large-mnli"
 _CONFIDENCE_THRESHOLD = 0.70
 _MAX_INPUT_TOKENS = 512
+_MODEL_INIT_LOCK = "/tmp/refuconnect_topic_classifier_init.lock"
+
+
+def _get_cache_dir() -> str:
+    """Return a writable cache directory for HuggingFace assets."""
+    cache_dir = os.environ.get("HUGGINGFACE_CACHE_DIR")
+    if not cache_dir:
+        cache_dir = "/app/models/huggingface"
+
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("HF_HOME", cache_dir)
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", cache_dir)
+    os.environ.setdefault("TRANSFORMERS_CACHE", cache_dir)
+    return cache_dir
 
 
 def _get_classifier():
@@ -33,13 +50,24 @@ def _get_classifier():
     try:
         from transformers import pipeline  # type: ignore[import]
 
-        _classifier = pipeline(
-            "zero-shot-classification",
-            model=model_name,
-            # Run on CPU; set device=0 to use GPU if available
-            device=-1,
+        cache_dir = _get_cache_dir()
+
+        # Avoid multi-worker stampede when the model is first downloaded.
+        lock = FileLock(_MODEL_INIT_LOCK, timeout=2)
+        with lock:
+            _classifier = pipeline(
+                "zero-shot-classification",
+                model=model_name,
+                # Run on CPU; set device=0 to use GPU if available
+                device=-1,
+                model_kwargs={"cache_dir": cache_dir},
+            )
+            logger.info("Zero-shot classifier loaded: %s", model_name)
+    except Timeout:
+        logger.warning(
+            "Zero-shot classifier init lock busy; skipping topic classification for this run."
         )
-        logger.info("Zero-shot classifier loaded: %s", model_name)
+        _classifier = None
     except Exception:
         logger.exception(
             "Failed to load zero-shot classifier '%s'. Topic classification disabled.",
@@ -59,8 +87,15 @@ def _get_tokenizer():
     try:
         from transformers import AutoTokenizer  # type: ignore[import]
 
-        _tokenizer = AutoTokenizer.from_pretrained(model_name)
-        logger.info("Tokenizer loaded: %s", model_name)
+        cache_dir = _get_cache_dir()
+
+        lock = FileLock(_MODEL_INIT_LOCK, timeout=2)
+        with lock:
+            _tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+            logger.info("Tokenizer loaded: %s", model_name)
+    except Timeout:
+        logger.warning("Tokenizer init lock busy; using character-based truncation fallback.")
+        _tokenizer = None
     except Exception:
         logger.exception("Failed to load tokenizer for token counting.")
         _tokenizer = None

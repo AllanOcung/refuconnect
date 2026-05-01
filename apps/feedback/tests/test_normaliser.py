@@ -9,7 +9,7 @@ Coverage targets:
   TC-NRM-05  Pre-category: USSD category linked as FeedbackCategory (confidence=0.80)
   TC-NRM-06  Pre-category: missing category in DB does not raise, Feedback still created
   TC-NRM-07  FeedbackMedia created when media_info present
-  TC-NRM-08  NLP task dispatched (process_feedback_async.delay called)
+  TC-NRM-08  NLP task dispatched (process_feedback_nlp.delay called)
   TC-NRM-09  USSD channel: no outbound acknowledgement attempted
   TC-NRM-10  SMS channel: acknowledgement attempted via MessageRouter
   TC-NRM-11  Text cleaning: control chars stripped, whitespace collapsed
@@ -186,7 +186,7 @@ def test_feedback_media_created_from_media_info(mock_ack):
 @patch("apps.feedback.services.normaliser.MessageNormaliser._dispatch_acknowledgement")
 def test_nlp_task_dispatched(mock_ack):
     mock_task = MagicMock()
-    with patch.dict("sys.modules", {"apps.nlp.tasks": MagicMock(process_feedback_async=mock_task)}):
+    with patch.dict("sys.modules", {"apps.nlp.tasks": MagicMock(process_feedback_nlp=mock_task)}):
         fb_id = MessageNormaliser().process(_raw())
 
     mock_task.delay.assert_called_once_with(fb_id)
@@ -251,5 +251,5 @@ def _patch_nlp():
     import sys
     from unittest.mock import patch as _patch, MagicMock as _MM
     mock_mod = _MM()
-    mock_mod.process_feedback_async = _MM()
+    mock_mod.process_feedback_nlp = _MM()
     return _patch.dict(sys.modules, {"apps.nlp.tasks": mock_mod})

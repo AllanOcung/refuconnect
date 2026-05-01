@@ -307,40 +307,35 @@ def detect_language(
                 confidence = float(prob)
                 predictions.append((lang, round(confidence, 4)))
 
-            # Return the first supported fastText prediction if it is confident enough.
-            for lang, confidence in predictions:
-                if lang in _SUPPORTED_LANGUAGES:
-                    review_flags["top_predictions"] = predictions
-                    threshold = confidence_thresholds.get(lang, 0.85)
-                    if confidence >= threshold:
-                        return lang, confidence, review_flags
-
-                    # FastText is uncertain, so fall through to AfroLID.
-                    review_flags["needs_language_review"] = True
-                    afrolid_lang, afrolid_confidence, afrolid_flags = _detect_with_afrolid(text)
-                    if afrolid_lang in _SUPPORTED_LANGUAGES:
-                        afrolid_flags["top_predictions"] = afrolid_flags.get("top_predictions", []) or review_flags["top_predictions"]
-                        afrolid_flags["needs_language_review"] = True
-                        return afrolid_lang, afrolid_confidence, afrolid_flags
-
-                    heuristic_lang, heuristic_confidence, heuristic_flags = _heuristic_language_score(text)
-                    if heuristic_lang in _SUPPORTED_LANGUAGES:
-                        heuristic_flags["top_predictions"] = heuristic_flags.get("top_predictions", []) or review_flags["top_predictions"]
-                        return heuristic_lang, heuristic_confidence, heuristic_flags
-
-                    return lang, confidence, review_flags
-
-            # FastText found no supported language, so try AfroLID next.
             review_flags["top_predictions"] = predictions
+            top_lang, top_confidence = predictions[0]
+
+            # Respect top-1 prediction only; lower-ranked labels should not override it.
+            if top_lang in _SUPPORTED_LANGUAGES:
+                threshold = confidence_thresholds.get(top_lang, 0.85)
+                if top_confidence >= threshold:
+                    return top_lang, top_confidence, review_flags
+
+                # FastText is uncertain, so fall through to AfroLID.
+                review_flags["needs_language_review"] = True
+                afrolid_lang, afrolid_confidence, afrolid_flags = _detect_with_afrolid(text)
+                if afrolid_lang in _SUPPORTED_LANGUAGES:
+                    afrolid_flags["top_predictions"] = afrolid_flags.get("top_predictions", []) or review_flags["top_predictions"]
+                    afrolid_flags["needs_language_review"] = True
+                    return afrolid_lang, afrolid_confidence, afrolid_flags
+
+                heuristic_lang, heuristic_confidence, heuristic_flags = _heuristic_language_score(text)
+                if heuristic_lang in _SUPPORTED_LANGUAGES:
+                    heuristic_flags["top_predictions"] = heuristic_flags.get("top_predictions", []) or review_flags["top_predictions"]
+                    return heuristic_lang, heuristic_confidence, heuristic_flags
+
+                return top_lang, top_confidence, review_flags
+
+            # FastText top-1 is unsupported, so try AfroLID next.
             afrolid_lang, afrolid_confidence, afrolid_flags = _detect_with_afrolid(text)
             if afrolid_lang in _SUPPORTED_LANGUAGES:
                 afrolid_flags["top_predictions"] = afrolid_flags.get("top_predictions", []) or predictions
                 return afrolid_lang, afrolid_confidence, afrolid_flags
-
-            heuristic_lang, heuristic_confidence, heuristic_flags = _heuristic_language_score(text)
-            if heuristic_lang in _SUPPORTED_LANGUAGES:
-                heuristic_flags["top_predictions"] = heuristic_flags.get("top_predictions", []) or predictions
-                return heuristic_lang, heuristic_confidence, heuristic_flags
 
             review_flags["needs_language_review"] = True
             return "unknown", 0.0, review_flags

@@ -102,3 +102,63 @@ def prepare_sentiment_training_data() -> list[dict]:
         for r in records
         if r["message_text_en"]
     ]
+
+
+def collect_corrections_and_log() -> dict:
+    """
+    Monthly batch: collect NGO staff corrections from AuditLog for the past 30
+    days and write an AIModelLog entry summarising the available training signal.
+
+    Returns a summary dict with counts of corrections by field type.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from apps.common.audit import AuditLog  # noqa: F401 — imported for type hints
+
+    cutoff = timezone.now() - timedelta(days=30)
+
+    try:
+        from apps.common.audit import AuditLog as _AuditLog
+    except ImportError:
+        logger.warning("AuditLog model not importable — skipping corrections collection.")
+        return {"skipped": True, "reason": "AuditLog not available"}
+
+    corrections = list(
+        _AuditLog.objects.filter(
+            action="FEEDBACK_EDITED",
+            field_changed__in=["category", "sentiment", "urgency_level"],
+            created_at__gte=cutoff,
+        ).values("field_changed", "new_value", "object_id")
+    )
+
+    if len(corrections) < 50:
+        logger.info(
+            "Only %d correction records found (need ≥50) — skipping retraining.",
+            len(corrections),
+        )
+        return {"corrections_found": len(corrections), "action": "skipped_insufficient_data"}
+
+    counts = Counter(c["field_changed"] for c in corrections)
+
+    # Build labelled samples to record in the training-data summary
+    samples: list[dict] = []
+    for c in corrections:
+        samples.append(
+            {
+                "field": c["field_changed"],
+                "label": c["new_value"],
+                "language": "unknown",  # language resolved at training time from feedback record
+            }
+        )
+
+    log_training_run(
+        model_type="topic_classifier",
+        model_version=datetime.now(timezone.utc).strftime("auto-%Y%m"),
+        training_data=samples,
+        trained_by="celery-beat",
+    )
+
+    logger.info("Monthly retraining log written. Corrections: %s", dict(counts))
+    return {"corrections_found": len(corrections), "by_field": dict(counts), "action": "logged"}

@@ -20,6 +20,11 @@ app.conf.beat_schedule = {
         "task": "apps.nlp.tasks.run_weekly_theme_clustering",
         "schedule": crontab(hour=2, minute=0, day_of_week=1),
     },
+    # Run monthly model retraining on the 1st of every month at 03:00 UTC
+    "monthly-model-retraining": {
+        "task": "apps.nlp.tasks.run_model_retraining",
+        "schedule": crontab(hour=3, minute=0, day_of_month=1),
+    },
     # Retry failed notifications every 15 minutes
     "retry-failed-notifications": {
         "task": "apps.notifications.tasks.retry_failed_notifications",

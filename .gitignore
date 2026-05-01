@@ -55,10 +55,8 @@ build/
 *.egg
 MANIFEST
 
-# ─── AI models (large binaries) ──────────────────────────────────────────────
-models/*.bin
-models/*.pt
-models/*.onnx
+# ─── AI models (large binaries — never commit model files) ───────────────────
+models/
 
 # ─── Celery ──────────────────────────────────────────────────────────────────
 celerybeat-schedule

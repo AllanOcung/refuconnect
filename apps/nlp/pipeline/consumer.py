@@ -169,16 +169,27 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
     from apps.nlp.pipeline.urgency_assessor import assess_urgency
     from apps.nlp.pipeline.location_extractor import extract_location
     from apps.nlp.pipeline.topic_classifier import classify_topics
-    from apps.feedback.models import FeedbackCategory, Category, Alert
+    from apps.nlp.pipeline.alert_manager import AlertManager
+    from apps.feedback.models import FeedbackCategory, Category
 
     # ── 1. Language detection ─────────────────────────────────────────────────
     try:
         # Use USSD language hint if available (trust user selection)
         ussd_hint = feedback.language if feedback.channel == "USSD" and feedback.language != "unknown" else None
-        language, lang_confidence, review_flags = detect_language(
-            feedback.message_text, 
-            ussd_language=ussd_hint
-        )
+        if ussd_hint:
+            lang_result = detect_language(feedback.message_text, ussd_language=ussd_hint)
+        else:
+            # Backward-compatible call style used by existing unit tests.
+            lang_result = detect_language(feedback.message_text)
+
+        # Support both legacy 2-tuple and current 3-tuple detector contracts.
+        if isinstance(lang_result, tuple) and len(lang_result) == 3:
+            language, lang_confidence, review_flags = lang_result
+        elif isinstance(lang_result, tuple) and len(lang_result) == 2:
+            language, lang_confidence = lang_result
+            review_flags = {"needs_language_review": False, "top_predictions": []}
+        else:
+            raise ValueError("detect_language returned invalid result format")
         feedback.language = language
         feedback.language_confidence = lang_confidence
         # Merge review flags if language detection flagged for review
@@ -202,7 +213,20 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
         )
         
         if should_translate:
-            english_text = translate_to_english(feedback.message_text, feedback.language)
+            translation_result = translate_to_english(
+                feedback.message_text,
+                feedback.language,
+                {"feedback_id": feedback.feedback_id},
+            )
+
+            # Support both current (text, context) and legacy string returns.
+            if isinstance(translation_result, tuple):
+                english_text, translation_context = translation_result
+                if translation_context.get("translation_failed"):
+                    context.translation_failed = True
+                    context.set_review_flag("translation_failed")
+            else:
+                english_text = translation_result
         else:
             # For low-confidence detections, use original text and flag for review
             if feedback.language not in ("en", "unknown") and feedback.language_confidence is not None:
@@ -237,7 +261,12 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
 
     # ── 5. Location extraction ────────────────────────────────────────────────
     try:
-        location = extract_location(feedback.message_text_en)
+        location_result = extract_location(feedback.message_text_en)
+        if isinstance(location_result, tuple):
+            location, _, _ = location_result
+        else:
+            location = location_result
+
         if location and not feedback.location:
             feedback.location = location
     except Exception as exc:
@@ -246,7 +275,16 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
 
     # ── 6. Topic classification ───────────────────────────────────────────────
     try:
-        topic_results = classify_topics(feedback.message_text_en)
+        topic_result = classify_topics(feedback.message_text_en)
+        if isinstance(topic_result, tuple) and len(topic_result) == 2:
+            topic_results, topic_review_flags = topic_result
+        else:
+            topic_results = topic_result
+            topic_review_flags = {"needs_category_review": False}
+
+        if topic_review_flags.get("needs_category_review"):
+            context.set_review_flag("needs_category_review")
+
         for category_name, confidence in topic_results:
             try:
                 category = Category.objects.get(category_name=category_name, is_active=True)
@@ -266,20 +304,4 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
 
     # ── 7. Auto-create alert for high-urgency feedback ────────────────────────
     if feedback.urgency_level == "High":
-        try:
-            alert_exists = feedback.alert if hasattr(feedback, "alert") else False
-            if not alert_exists:
-                Alert.objects.create(
-                    feedback=feedback,
-                    priority_level="High",
-                    description=(
-                        f"Auto-generated: high urgency detected in Feedback #{feedback.feedback_id}. "
-                        f"Sentiment: {feedback.sentiment or 'N/A'}. "
-                        f"Rule: {context.urgency_rule or 'unknown'}."
-                    ),
-                )
-        except Exception:
-            # Alert creation is best-effort — don't fail the entire pipeline
-            logger.exception(
-                "Failed to create auto-alert for feedback %d.", feedback.feedback_id
-            )
+        AlertManager.dispatch(feedback, context.urgency_rule)

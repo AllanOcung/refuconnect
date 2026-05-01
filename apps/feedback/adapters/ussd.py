@@ -421,8 +421,8 @@ class USSDAdapter:
             feedback = Feedback.objects.create(**data)
 
             # Trigger async NLP processing
-            from apps.nlp.tasks import process_feedback_async
-            process_feedback_async.delay(feedback.feedback_id)
+            from apps.nlp.tasks import process_feedback_nlp
+            process_feedback_nlp.delay(feedback.feedback_id)
 
             ref = f"RFC-{feedback.feedback_id:08d}"
             return (
