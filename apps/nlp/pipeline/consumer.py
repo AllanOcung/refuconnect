@@ -188,7 +188,7 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
     from apps.nlp.pipeline.urgency_assessor import assess_urgency
     from apps.nlp.pipeline.sentiment_analyser import analyse_sentiment
     from apps.nlp.pipeline.location_extractor import extract_location
-    from apps.feedback.models import FeedbackCategory, Category
+    # TopicClassifier persists FeedbackCategory rows internally (C-08).
 
     # ── Step 2: Language detection ────────────────────────────────────────────
     ussd_hint = (
@@ -268,31 +268,15 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
     feedback.message_text_en = english_text
 
     # ── Step 4: Topic classification ─────────────────────────────────────────
-    topic_result = classify_topics(feedback.message_text_en)
+    topic_result = classify_topics(feedback)
     if isinstance(topic_result, tuple) and len(topic_result) == 2:
-        topic_results, topic_flags = topic_result
+        _topic_results, topic_flags = topic_result
     else:
-        topic_results = topic_result or []
+        _topic_results = topic_result or []
         topic_flags = {}
 
     if topic_flags.get("needs_category_review"):
         context.set_review_flag("needs_category_review")
-
-    for category_name, confidence in topic_results:
-        try:
-            category = Category.objects.get(category_name=category_name, is_active=True)
-            FeedbackCategory.objects.update_or_create(
-                feedback=feedback,
-                category=category,
-                defaults={"confidence_score": confidence, "is_ai_assigned": True},
-            )
-        except Category.DoesNotExist:
-            logger.warning(
-                "_run_pipeline: category '%s' not found in DB — skipping FeedbackCategory. "
-                "feedback_id=%d",
-                category_name,
-                feedback.feedback_id,
-            )
 
     # ── Step 5: Urgency assessment ────────────────────────────────────────────
     urgency_level, urgency_rule = assess_urgency(feedback.message_text_en)

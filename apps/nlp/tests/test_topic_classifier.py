@@ -82,8 +82,8 @@ class TestTopicClassifier:
                 assert len(results) == 1
                 assert results[0] == ("Health", 0.72)
 
-    def test_no_categories_above_threshold_flags_review(self):
-        """No categories above threshold should set needs_category_review."""
+    def test_no_categories_above_threshold_fallbacks_to_top_and_flags_review(self):
+        """If no score >= 0.70, classifier should keep top label and flag review."""
         text = "Generic message"
 
         with patch("apps.nlp.pipeline.topic_classifier._get_classifier") as mock_clf:
@@ -103,7 +103,7 @@ class TestTopicClassifier:
 
                 results, flags = classify_topics(text)
 
-                assert results == []
+                assert results == [("Health", 0.65)]
                 assert flags["needs_category_review"] is True
 
     def test_ussd_pre_category_added(self):
@@ -238,17 +238,24 @@ class TestTopicClassifier:
                 with patch("apps.feedback.models.Category.objects.get") as mock_category_get:
                     mock_health = MagicMock()
                     mock_violence = MagicMock()
+                    mock_health.category_id = 1
+                    mock_violence.category_id = 2
 
-                    def category_get_side_effect(category_name):
-                        if category_name == "Health":
+                    def category_get_side_effect(category_name__iexact):
+                        if category_name__iexact == "Health":
                             return mock_health
-                        elif category_name == "Violence":
+                        elif category_name__iexact == "Violence":
                             return mock_violence
                         raise Exception("Not found")
 
                     mock_category_get.side_effect = category_get_side_effect
 
-                    with patch("apps.feedback.models.FeedbackCategory.objects.get_or_create") as mock_get_or_create:
+                    with patch(
+                        "apps.feedback.models.FeedbackCategory.objects.filter"
+                    ) as mock_fc_filter, patch(
+                        "apps.feedback.models.FeedbackCategory.objects.get_or_create"
+                    ) as mock_get_or_create:
+                        mock_fc_filter.return_value.values_list.return_value = []
                         mock_get_or_create.return_value = (MagicMock(), True)
 
                         results, flags = classify_topics(text, feedback_id=123)
@@ -281,6 +288,43 @@ class TestTopicClassifier:
 
                 # Should still return results
                 assert results == [("Health", 0.80)]
+
+    @pytest.mark.django_db
+    def test_existing_manual_category_not_overridden(self):
+        """Manual USSD category rows must remain untouched."""
+        text = "Health related issue"
+
+        with patch("apps.nlp.pipeline.topic_classifier._get_classifier") as mock_clf:
+            mock_classifier = MagicMock()
+            mock_classifier.return_value = {
+                "labels": ["Health"],
+                "scores": [0.90],
+            }
+            mock_clf.return_value = mock_classifier
+
+            with patch("apps.feedback.models.Category.objects.filter") as mock_categories:
+                mock_categories.return_value.values_list.return_value = ["Health"]
+
+                with patch("apps.feedback.models.Feedback.objects.get") as mock_feedback_get:
+                    mock_feedback = MagicMock()
+                    mock_feedback_get.return_value = mock_feedback
+
+                    with patch("apps.feedback.models.Category.objects.get") as mock_category_get:
+                        mock_category = MagicMock()
+                        mock_category.category_id = 10
+                        mock_category_get.return_value = mock_category
+
+                        with patch(
+                            "apps.feedback.models.FeedbackCategory.objects.filter"
+                        ) as mock_fc_filter, patch(
+                            "apps.feedback.models.FeedbackCategory.objects.get_or_create"
+                        ) as mock_get_or_create:
+                            mock_fc_filter.return_value.values_list.return_value = [10]
+
+                            results, flags = classify_topics(text, feedback_id=123)
+
+                            assert results == [("Health", 0.9)]
+                            mock_get_or_create.assert_not_called()
 
     def test_return_tuple_structure(self):
         """Return should be (results_list, review_flags_dict)."""

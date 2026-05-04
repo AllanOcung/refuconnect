@@ -27,6 +27,23 @@ _CONFIDENCE_THRESHOLD = 0.70
 _MAX_INPUT_TOKENS = 512
 _MODEL_INIT_LOCK = "/tmp/refuconnect_topic_classifier_init.lock"
 
+# Exact DB category names (must match Category.category_name seeds).
+# Verbose descriptions are used as NLI hypotheses so the model understands
+# humanitarian context — short names score poorly on ambiguous messages.
+_CATEGORY_DESCRIPTIONS: dict[str, str] = {
+    "Food Security": "food access, nutrition, or food distribution problems",
+    "Healthcare": "medical services, health facility access, medicine availability, or health emergencies",
+    "Shelter & Housing": "accommodation conditions, settlement infrastructure, or non-food item distribution",
+    "Water & Sanitation": "clean water access, hygiene, sanitation, or WASH services",
+    "Education": "school access, learning materials, teacher availability, or child education programs",
+    "Protection & Safety": "personal safety threats, gender-based violence, child protection, exploitation, or physical security concerns",
+    "Livelihoods & Employment": "income generation, vocational training, employment, or economic support",
+    "Legal Aid & Documentation": "refugee status determination, registration, documentation, or legal rights",
+    "Psychosocial Support": "mental health, trauma counselling, or community social support",
+    "Infrastructure": "roads, electricity, internet connectivity, or camp and settlement infrastructure",
+    "General Feedback": "general feedback that does not fit any specific thematic category",
+}
+
 
 def _get_cache_dir() -> str:
     """Return a writable cache directory for HuggingFace assets."""
@@ -126,8 +143,56 @@ def _truncate_to_tokens(text: str, max_tokens: int = _MAX_INPUT_TOKENS) -> str:
         return text[:estimated_chars]
 
 
+def _get_feedback_and_text(
+    text_or_feedback,
+    feedback_id: Optional[int],
+) -> tuple[Optional[object], str, Optional[int]]:
+    """Resolve `(feedback_obj, text_to_classify, feedback_id)` from inputs."""
+    feedback = None
+    source_text = ""
+
+    if hasattr(text_or_feedback, "message_text"):
+        feedback = text_or_feedback
+        source_text = (feedback.message_text_en or feedback.message_text or "").strip()
+        feedback_id = feedback_id or getattr(feedback, "feedback_id", None)
+    else:
+        source_text = str(text_or_feedback or "").strip()
+
+    return feedback, source_text, feedback_id
+
+
+def _resolve_candidate_labels() -> tuple[list[str], dict[str, str]]:
+    """
+    Return ``(descriptions, desc_to_db_name)`` for active categories.
+
+    *descriptions* are the verbose NLI hypothesis strings passed to the
+    classifier.  *desc_to_db_name* maps each description back to the exact
+    DB ``Category.category_name`` for persistence.
+    """
+    from apps.feedback.models import Category
+
+    active_names: list[str] = list(
+        Category.objects.filter(is_active=True).values_list("category_name", flat=True)
+    )
+    if not active_names:
+        return [], {}
+
+    descriptions: list[str] = []
+    desc_to_db: dict[str, str] = {}
+
+    for db_name in active_names:
+        desc = _CATEGORY_DESCRIPTIONS.get(db_name)
+        if desc is None:
+            # Unknown category — use name itself as hypothesis
+            desc = db_name
+        descriptions.append(desc)
+        desc_to_db[desc] = db_name
+
+    return descriptions, desc_to_db
+
+
 def classify_topics(
-    text: str,
+    text_or_feedback,
     feedback_id: Optional[int] = None,
     ussd_pre_category: Optional[str] = None,
 ) -> tuple[list[tuple[str, float]], dict]:
@@ -151,11 +216,15 @@ def classify_topics(
 
     review_flags = {"needs_category_review": False}
 
-    active_labels = list(
-        Category.objects.filter(is_active=True).values_list("category_name", flat=True)
-    )
-    if not active_labels:
+    feedback, source_text, feedback_id = _get_feedback_and_text(text_or_feedback, feedback_id)
+    if not source_text:
+        review_flags["needs_category_review"] = True
+        return [], review_flags
+
+    candidate_descriptions, desc_to_db = _resolve_candidate_labels()
+    if not candidate_descriptions:
         logger.warning("No active categories found for topic classification.")
+        review_flags["needs_category_review"] = True
         return [], review_flags
 
     classifier = _get_classifier()
@@ -163,22 +232,32 @@ def classify_topics(
         return [], review_flags
 
     # Truncate to 512 tokens
-    truncated = _truncate_to_tokens(text, _MAX_INPUT_TOKENS)
+    truncated = _truncate_to_tokens(source_text, _MAX_INPUT_TOKENS)
 
     results = []
 
     try:
-        result = classifier(truncated, candidate_labels=active_labels, multi_label=True)
-        classified = [
-            (label, round(score, 3))
+        result = classifier(truncated, candidate_labels=candidate_descriptions, multi_label=True)
+        # Map verbose description back to DB category name
+        scored = [
+            (desc_to_db.get(label, label), round(score, 3))
             for label, score in zip(result["labels"], result["scores"])
-            if score >= _CONFIDENCE_THRESHOLD
         ]
+        classified = [item for item in scored if item[1] >= _CONFIDENCE_THRESHOLD]
         # Sort by score descending (highest confidence first)
         classified = sorted(classified, key=lambda x: x[1], reverse=True)
-        results.extend(classified)
+        if classified:
+            results.extend(classified)
+        elif scored:
+            # Fallback: top label, flag for manual review.
+            fallback_label, fallback_score = scored[0]
+            results.append((fallback_label, fallback_score))
+            review_flags["needs_category_review"] = True
+        else:
+            review_flags["needs_category_review"] = True
     except Exception:
         logger.exception("Topic classification failed.")
+        review_flags["needs_category_review"] = True
 
     # Add USSD pre-category if provided
     if ussd_pre_category:
@@ -195,16 +274,36 @@ def classify_topics(
     # Create FeedbackCategory records if feedback_id provided
     if feedback_id is not None and results:
         try:
-            feedback = Feedback.objects.get(feedback_id=feedback_id)
+            if feedback is None:
+                feedback = Feedback.objects.get(feedback_id=feedback_id)
+
+            # Preserve manual USSD categories (is_ai_assigned=False); add AI
+            # categories without overriding existing non-AI assignments.
+            manual_category_ids = set(
+                FeedbackCategory.objects.filter(
+                    feedback=feedback,
+                    is_ai_assigned=False,
+                ).values_list("category_id", flat=True)
+            )
+
             for category_name, confidence in results:
                 try:
-                    category = Category.objects.get(category_name=category_name)
-                    # Use get_or_create to skip duplicates
-                    FeedbackCategory.objects.get_or_create(
+                    category = Category.objects.get(category_name__iexact=category_name)
+
+                    # If a manual category already exists, keep it untouched.
+                    if category.category_id in manual_category_ids:
+                        continue
+
+                    created_row, _created = FeedbackCategory.objects.get_or_create(
                         feedback=feedback,
                         category=category,
                         defaults={"confidence_score": confidence, "is_ai_assigned": True},
                     )
+
+                    # If AI row already exists, refresh confidence to latest score.
+                    if not _created and created_row.is_ai_assigned:
+                        created_row.confidence_score = confidence
+                        created_row.save(update_fields=["confidence_score"])
                 except Category.DoesNotExist:
                     logger.warning(
                         "Category not found: %s. Skipping FeedbackCategory creation.",
