@@ -77,7 +77,10 @@ class TestLanguageDetector:
     def test_unsupported_language_returns_other(self):
         """Unsupported fastText top-1 + AfroLID miss → language='other' (C-06 §4)."""
         text = "This is a test message for language detection"
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model, \
+        with patch(
+            "apps.nlp.pipeline.language_detector._detect_with_lingua",
+            return_value=("unknown", 0.0, {"needs_language_review": True, "top_predictions": []}),
+        ), patch("apps.nlp.pipeline.language_detector._get_model") as mock_model, \
             patch("apps.nlp.pipeline.language_detector._detect_with_afrolid",
                   return_value=("unknown", 0.0, {"needs_language_review": True, "top_predictions": []})):
             mock_instance = MagicMock()
