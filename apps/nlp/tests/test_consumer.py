@@ -107,13 +107,13 @@ class TestPipelineConsumer:
             call_order.append("classify_topics")
             return [], {}
 
-        def mock_urgency(text):
+        def mock_urgency(_feedback):
             call_order.append("urgency")
-            return "Low", "default"
+            return "Low", "default", {}
 
-        def mock_sentiment(text):
+        def mock_sentiment(_feedback, translation_failed=False):
             call_order.append("sentiment")
-            return None, 0.0
+            return None, 0.0, {"sentiment_used_untranslated_text": False}
 
         def mock_location(text):
             call_order.append("location")
@@ -129,10 +129,10 @@ class TestPipelineConsumer:
             "apps.nlp.pipeline.topic_classifier.classify_topics",
             side_effect=mock_classify,
         ), mock.patch(
-            "apps.nlp.pipeline.urgency_assessor.assess_urgency",
+            "apps.nlp.pipeline.urgency_assessor.assess_feedback_urgency",
             side_effect=mock_urgency,
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
+            "apps.nlp.pipeline.sentiment_analyser.analyse_feedback_sentiment",
             side_effect=mock_sentiment,
         ), mock.patch(
             "apps.nlp.pipeline.location_extractor.extract_location",
@@ -179,11 +179,11 @@ class TestPipelineConsumer:
             "apps.nlp.pipeline.topic_classifier.classify_topics",
             return_value=([], {}),
         ), mock.patch(
-            "apps.nlp.pipeline.urgency_assessor.assess_urgency",
-            return_value=("High", "keyword:emergency"),
+            "apps.nlp.pipeline.urgency_assessor.assess_feedback_urgency",
+            return_value=("High", "keyword:emergency", {}),
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
-            return_value=(None, 0.0),
+            "apps.nlp.pipeline.sentiment_analyser.analyse_feedback_sentiment",
+            return_value=(None, 0.0, {"sentiment_used_untranslated_text": False}),
         ), mock.patch(
             "apps.nlp.pipeline.location_extractor.extract_location",
             return_value=None,
@@ -208,11 +208,11 @@ class TestPipelineConsumer:
             "apps.nlp.pipeline.topic_classifier.classify_topics",
             return_value=([], {}),
         ), mock.patch(
-            "apps.nlp.pipeline.urgency_assessor.assess_urgency",
-            return_value=("Low", "default"),
+            "apps.nlp.pipeline.urgency_assessor.assess_feedback_urgency",
+            return_value=("Low", "default", {}),
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
-            return_value=(None, 0.0),
+            "apps.nlp.pipeline.sentiment_analyser.analyse_feedback_sentiment",
+            return_value=(None, 0.0, {"sentiment_used_untranslated_text": False}),
         ), mock.patch(
             "apps.nlp.pipeline.location_extractor.extract_location",
             return_value=("Location", 0.9, "settlement"),
@@ -233,11 +233,11 @@ class TestPipelineConsumer:
             "apps.nlp.pipeline.topic_classifier.classify_topics",
             return_value=([], {}),
         ), mock.patch(
-            "apps.nlp.pipeline.urgency_assessor.assess_urgency",
-            return_value=("Low", "default"),
+            "apps.nlp.pipeline.urgency_assessor.assess_feedback_urgency",
+            return_value=("Low", "default", {}),
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
-            return_value=(None, 0.0),
+            "apps.nlp.pipeline.sentiment_analyser.analyse_feedback_sentiment",
+            return_value=(None, 0.0, {"sentiment_used_untranslated_text": False}),
         ), mock.patch(
             "apps.nlp.pipeline.location_extractor.extract_location",
             return_value=None,
@@ -263,11 +263,11 @@ class TestPipelineConsumer:
             "apps.nlp.pipeline.topic_classifier.classify_topics",
             return_value=([], {}),
         ), mock.patch(
-            "apps.nlp.pipeline.urgency_assessor.assess_urgency",
-            return_value=("Low", "default"),
+            "apps.nlp.pipeline.urgency_assessor.assess_feedback_urgency",
+            return_value=("Low", "default", {}),
         ), mock.patch(
-            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
-            return_value=(None, 0.0),
+            "apps.nlp.pipeline.sentiment_analyser.analyse_feedback_sentiment",
+            return_value=(None, 0.0, {"sentiment_used_untranslated_text": False}),
         ), mock.patch(
             "apps.nlp.pipeline.location_extractor.extract_location",
             return_value=None,
