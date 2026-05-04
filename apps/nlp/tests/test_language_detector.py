@@ -43,12 +43,16 @@ class TestLanguageDetector:
     def test_ussd_hint_empty_string_ignored(self):
         """Empty string USSD hint should be ignored (fallback to model)."""
         text = "some text to detect"
-        # Mock model to avoid loading fasttext
-        with patch("apps.nlp.pipeline.language_detector._get_model") as mock_model:
-            mock_instance = MagicMock()
-            mock_instance.predict.return_value = (["__label__en"], [0.95])
-            mock_model.return_value = mock_instance
-
+        with patch(
+            "apps.nlp.pipeline.language_detector._detect_with_lingua",
+            return_value=("unknown", 0.0, {"needs_language_review": True, "top_predictions": []}),
+        ), patch(
+            "apps.nlp.pipeline.language_detector._detect_with_fasttext",
+            return_value=("en", 0.95, {"needs_language_review": False, "top_predictions": [("en", 0.95)]}),
+        ), patch(
+            "apps.nlp.pipeline.language_detector._detect_with_afrolid",
+            return_value=("unknown", 0.0, {"needs_language_review": True, "top_predictions": []}),
+        ):
             lang, confidence, flags = detect_language(text, ussd_language="")
             # Should use model since hint is empty
             assert lang == "en"
