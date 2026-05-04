@@ -26,6 +26,8 @@ cryptography==43.0.1
 #   pip install torch==2.4.1+cpu --index-url https://download.pytorch.org/whl/cpu
 torch==2.4.1
 transformers==4.44.2
+sentencepiece==0.2.0
+sacremoses==0.1.1
 scikit-learn==1.5.1
 numpy==1.26.4
 fasttext-wheel==0.9.2
@@ -33,7 +35,6 @@ vaderSentiment==3.3.2
 spacy==3.7.2
 
 # ─── External APIs ───────────────────────────────────────────────────────────
-google-cloud-translate==3.16.0
 africastalking==1.2.5
 requests==2.32.3
 

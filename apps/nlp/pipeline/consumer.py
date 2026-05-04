@@ -227,12 +227,19 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
 
     # ── Step 3: Translation to English ───────────────────────────────────────
     confidence_threshold = getattr(
-        settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.85
+        settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.75
     )
+    force_translate_languages = set(
+        getattr(settings, "LANGUAGES_ALWAYS_TRANSLATE", ("sw",))
+    )
+    should_force_translate = language in force_translate_languages
+
     should_translate = (
         language not in ("en", "unknown")
-        and lang_confidence is not None
-        and lang_confidence >= confidence_threshold
+        and (
+            should_force_translate
+            or (lang_confidence is not None and lang_confidence >= confidence_threshold)
+        )
     )
 
     if should_translate:
@@ -249,7 +256,11 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
         else:
             english_text = translation_result
     else:
-        if language not in ("en", "unknown") and lang_confidence is not None:
+        if (
+            language not in ("en", "unknown")
+            and not should_force_translate
+            and lang_confidence is not None
+        ):
             if lang_confidence < confidence_threshold:
                 context.set_review_flag("low_confidence_translation_skipped")
         english_text = feedback.message_text

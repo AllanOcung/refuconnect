@@ -3,11 +3,13 @@ Unit tests for the translation service component.
 
 Tests cover:
   - Redis cache hit (mocked Redis)
-  - Redis cache miss → Google API call (mocked API)
-  - Google fails → Azure fallback (mocked)
-  - Both fail → translation_failed flag set
+  - Redis cache miss → HuggingFace pipeline call (mocked)
+  - HuggingFace pipeline failure → translation_failed flag set
+  - Pipeline load failure → translation_failed flag set
   - Text truncation with logging
   - Context passing and modification
+  - Model selection by language code
+  - detect_and_translate backward compat
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from apps.nlp.pipeline.translation_service import (
+    _get_model_name,
     _make_cache_key,
     translate_to_english,
 )
@@ -59,7 +62,7 @@ class TestTranslationService:
         assert context == {}
 
     def test_redis_cache_hit(self):
-        """Cache hit should return cached translation without API call."""
+        """Cache hit should return cached translation without calling pipeline."""
         text = "Habari yako"
         context = {"feedback_id": "fb_123"}
 
@@ -69,18 +72,18 @@ class TestTranslationService:
             mock_redis.return_value = redis_instance
 
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_pipe:
                 result, updated_context = translate_to_english(
                     text, source_language="sw", context=context
                 )
 
                 assert result == "How are you"
-                # Google client should not be called
-                assert not mock_google.return_value.translate.called
+                # Pipeline should not be called on cache hit
+                mock_pipe.assert_not_called()
 
-    def test_redis_cache_miss_uses_google(self):
-        """Cache miss should call Google API."""
+    def test_redis_cache_miss_uses_huggingface(self):
+        """Cache miss should call HuggingFace pipeline."""
         text = "Habari yako"
         context = {}
 
@@ -90,23 +93,21 @@ class TestTranslationService:
             mock_redis.return_value = redis_instance
 
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.return_value = {
-                    "translatedText": "How are you"
-                }
-                mock_google.return_value = google_instance
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "How are you"}]
+                mock_get_pipe.return_value = pipe_instance
 
                 result, updated_context = translate_to_english(
                     text, source_language="sw", context=context
                 )
 
                 assert result == "How are you"
-                google_instance.translate.assert_called_once()
+                pipe_instance.assert_called_once_with(text)
 
-    def test_google_result_cached_in_redis(self):
-        """Successful Google translation should be cached."""
+    def test_huggingface_result_cached_in_redis(self):
+        """Successful HuggingFace translation should be cached in Redis."""
         text = "Habari yako"
 
         with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
@@ -115,51 +116,19 @@ class TestTranslationService:
             mock_redis.return_value = redis_instance
 
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.return_value = {
-                    "translatedText": "How are you"
-                }
-                mock_google.return_value = google_instance
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "How are you"}]
+                mock_get_pipe.return_value = pipe_instance
 
                 result, _ = translate_to_english(text, source_language="sw")
 
                 assert result == "How are you"
                 redis_instance.setex.assert_called_once()
 
-    def test_google_fails_tries_azure_fallback(self):
-        """Google failure should trigger Azure fallback."""
-        text = "Habari yako"
-
-        with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
-            redis_instance = MagicMock()
-            redis_instance.get.return_value = None  # Cache miss
-            mock_redis.return_value = redis_instance
-
-            with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.side_effect = Exception("Google API error")
-                mock_google.return_value = google_instance
-
-                with patch(
-                    "apps.nlp.pipeline.translation_service._is_azure_configured",
-                    return_value=True
-                ):
-                    with patch(
-                        "apps.nlp.pipeline.translation_service._translate_with_azure"
-                    ) as mock_azure:
-                        mock_azure.return_value = "How are you (from Azure)"
-
-                        result, _ = translate_to_english(text, source_language="sw")
-
-                        assert result == "How are you (from Azure)"
-                        mock_azure.assert_called_once_with(text, "sw")
-
-    def test_both_apis_fail_sets_translation_failed_flag(self):
-        """Both API failures should set translation_failed flag."""
+    def test_huggingface_fails_sets_translation_failed_flag(self):
+        """HuggingFace pipeline error should set translation_failed flag."""
         text = "Habari yako"
         context = {"feedback_id": "fb_456"}
 
@@ -169,30 +138,42 @@ class TestTranslationService:
             mock_redis.return_value = redis_instance
 
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.side_effect = Exception("Google error")
-                mock_google.return_value = google_instance
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.side_effect = Exception("Pipeline inference error")
+                mock_get_pipe.return_value = pipe_instance
 
-                with patch(
-                    "apps.nlp.pipeline.translation_service._is_azure_configured",
-                    return_value=True
-                ):
-                    with patch(
-                        "apps.nlp.pipeline.translation_service._translate_with_azure"
-                    ) as mock_azure:
-                        mock_azure.return_value = None  # Azure also fails
+                result, updated_context = translate_to_english(
+                    text, source_language="sw", context=context
+                )
 
-                        result, updated_context = translate_to_english(
-                            text, source_language="sw", context=context
-                        )
+                assert result == text  # Returns original
+                assert updated_context.get("translation_failed") is True
 
-                        assert result == text  # Returns original
-                        assert updated_context.get("translation_failed") is True
+    def test_pipeline_load_failure_sets_translation_failed(self):
+        """Pipeline load failure (None returned) should set translation_failed flag."""
+        text = "Habari yako"
+        context = {"feedback_id": "fb_789"}
+
+        with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
+            redis_instance = MagicMock()
+            redis_instance.get.return_value = None
+            mock_redis.return_value = redis_instance
+
+            with patch(
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline",
+                return_value=None,
+            ):
+                result, updated_context = translate_to_english(
+                    text, source_language="sw", context=context
+                )
+
+                assert result == text
+                assert updated_context.get("translation_failed") is True
 
     def test_text_truncation_at_5000_chars(self):
-        """Text > 5000 chars should be truncated."""
+        """Text > 5000 chars should be truncated before translation."""
         text = "a" * 6000
         context = {"feedback_id": "fb_789"}
 
@@ -202,17 +183,16 @@ class TestTranslationService:
             mock_redis.return_value = redis_instance
 
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
 
-                def google_translate_side_effect(text_arg, **kwargs):
-                    # Verify truncation happened
+                def pipe_side_effect(text_arg):
                     assert len(text_arg) == 5000
-                    return {"translatedText": "translated"}
+                    return [{"translation_text": "translated"}]
 
-                google_instance.translate.side_effect = google_translate_side_effect
-                mock_google.return_value = google_instance
+                pipe_instance.side_effect = pipe_side_effect
+                mock_get_pipe.return_value = pipe_instance
 
                 result, _ = translate_to_english(text, source_language="sw", context=context)
 
@@ -225,78 +205,21 @@ class TestTranslationService:
 
         with patch("apps.nlp.pipeline.translation_service._get_redis_client"):
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.return_value = {"translatedText": "result"}
-                mock_google.return_value = google_instance
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "result"}]
+                mock_get_pipe.return_value = pipe_instance
 
                 with patch(
                     "apps.nlp.pipeline.translation_service.logger"
                 ) as mock_logger:
                     result, _ = translate_to_english(text, source_language="sw", context=context)
 
-                    # Check warning was logged
                     mock_logger.warning.assert_called_once()
                     call_args = mock_logger.warning.call_args
                     assert "5000" in str(call_args)
                     assert "fb_001" in str(call_args)
-
-    def test_azure_result_cached(self):
-        """Successful Azure translation should be cached."""
-        text = "Habari"
-
-        with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
-            redis_instance = MagicMock()
-            redis_instance.get.return_value = None
-            mock_redis.return_value = redis_instance
-
-            with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.side_effect = Exception("Google fails")
-                mock_google.return_value = google_instance
-
-                with patch(
-                    "apps.nlp.pipeline.translation_service._is_azure_configured",
-                    return_value=True
-                ):
-                    with patch(
-                        "apps.nlp.pipeline.translation_service._translate_with_azure"
-                    ) as mock_azure:
-                        mock_azure.return_value = "Greetings"
-
-                        result, _ = translate_to_english(text, source_language="sw")
-
-                        assert result == "Greetings"
-                        redis_instance.setex.assert_called_once()
-
-    def test_azure_not_configured_returns_original(self):
-        """Azure not configured should use Google, then return original if Google fails."""
-        text = "Test"
-
-        with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
-            redis_instance = MagicMock()
-            redis_instance.get.return_value = None
-            mock_redis.return_value = redis_instance
-
-            with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.side_effect = Exception("Google fails")
-                mock_google.return_value = google_instance
-
-                with patch(
-                    "apps.nlp.pipeline.translation_service._is_azure_configured"
-                ) as mock_azure_config:
-                    mock_azure_config.return_value = False
-
-                    result, context = translate_to_english(text, source_language="sw", context={})
-
-                    assert result == text
-                    assert context.get("translation_failed") is True
 
     def test_context_preservation(self):
         """Original context should be preserved and updated."""
@@ -305,40 +228,40 @@ class TestTranslationService:
 
         with patch("apps.nlp.pipeline.translation_service._get_redis_client"):
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.return_value = {"translatedText": "Prueba"}
-                mock_google.return_value = google_instance
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "Prueba"}]
+                mock_get_pipe.return_value = pipe_instance
 
                 result, updated_context = translate_to_english(
                     text, source_language="es", context=context
                 )
 
-                # Original context preserved
                 assert updated_context["feedback_id"] == "fb_x"
                 assert updated_context["channel"] == "SMS"
-                # No translation_failed should be added on success
                 assert "translation_failed" not in updated_context
 
-    def test_detect_and_translate_function_exists(self):
-        """detect_and_translate should work for backward compatibility."""
+    def test_detect_and_translate_returns_unknown(self):
+        """detect_and_translate should return ('unknown', translated_text)."""
         from apps.nlp.pipeline.translation_service import detect_and_translate
 
-        with patch(
-            "apps.nlp.pipeline.translation_service._get_google_client"
-        ) as mock_google:
-            google_instance = MagicMock()
-            google_instance.translate.return_value = {
-                "detectedSourceLanguage": "sw",
-                "translatedText": "How are you",
-            }
-            mock_google.return_value = google_instance
+        with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
+            redis_instance = MagicMock()
+            redis_instance.get.return_value = None
+            mock_redis.return_value = redis_instance
 
-            detected, translated = detect_and_translate("Habari yako")
+            with patch(
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "How are you"}]
+                mock_get_pipe.return_value = pipe_instance
 
-            assert detected == "sw"
-            assert translated == "How are you"
+                detected, translated = detect_and_translate("Habari yako")
+
+                assert detected == "unknown"
+                assert translated == "How are you"
 
     def test_redis_connection_error_handled(self):
         """Redis connection error should not break translation."""
@@ -350,40 +273,33 @@ class TestTranslationService:
             mock_redis.return_value = redis_instance
 
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.return_value = {"translatedText": "Greetings"}
-                mock_google.return_value = google_instance
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "Greetings"}]
+                mock_get_pipe.return_value = pipe_instance
 
                 result, _ = translate_to_english(text, source_language="sw")
 
                 # Should still translate despite Redis error
                 assert result == "Greetings"
 
-    def test_none_source_language_supported(self):
-        """None source_language should be passed to API (auto-detect)."""
+    def test_none_source_language_returns_original(self):
+        """C-07: None source_language should bypass translation and keep original text."""
         text = "Unknown language text"
 
-        with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
-            redis_instance = MagicMock()
-            redis_instance.get.return_value = None
-            mock_redis.return_value = redis_instance
+        with patch(
+            "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+        ) as mock_get_pipe:
+            result, context = translate_to_english(text, source_language=None)
 
-            with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.return_value = {"translatedText": "result"}
-                mock_google.return_value = google_instance
+            assert result == text
+            assert context == {}
+            mock_get_pipe.assert_not_called()
 
-                result, _ = translate_to_english(text, source_language=None)
-
-                google_instance.translate.assert_called_once()
-
-    def test_unknown_source_language_passed_as_none(self):
-        """'unknown' source_language should be treated as None for API."""
-        text = "Text"
+    def test_unknown_source_language_uses_fallback_pipeline(self):
+        """'unknown' source_language should go through the fallback pipeline."""
+        text = "Text in unknown language"
 
         with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
             redis_instance = MagicMock()
@@ -391,13 +307,74 @@ class TestTranslationService:
             mock_redis.return_value = redis_instance
 
             with patch(
-                "apps.nlp.pipeline.translation_service._get_google_client"
-            ) as mock_google:
-                google_instance = MagicMock()
-                google_instance.translate.return_value = {"translatedText": "result"}
-                mock_google.return_value = google_instance
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "result"}]
+                mock_get_pipe.return_value = pipe_instance
 
                 result, _ = translate_to_english(text, source_language="unknown")
 
-                # Should call with None, not "unknown"
-                google_instance.translate.assert_called_once()
+                # Pipeline should be called (not short-circuited)
+                mock_get_pipe.assert_called_once_with("unknown")
+                assert result == "result"
+
+    def test_model_selection_sw_uses_multilingual_fallback(self):
+        """Swahili uses the multilingual fallback (no dedicated sw-en model on HuggingFace)."""
+        model = _get_model_name("sw")
+        assert model == "Helsinki-NLP/opus-mt-mul-en"
+
+    def test_model_selection_unknown_uses_fallback_model(self):
+        """'unknown' and 'other' source languages should use the multilingual fallback."""
+        assert _get_model_name("unknown") == "Helsinki-NLP/opus-mt-mul-en"
+        assert _get_model_name("other") == "Helsinki-NLP/opus-mt-mul-en"
+        assert _get_model_name(None) == "Helsinki-NLP/opus-mt-mul-en"
+
+    def test_model_selection_unsupported_language_uses_fallback(self):
+        """Unsupported language codes should fall back to the multilingual model."""
+        model = _get_model_name("fr")
+        assert model == "Helsinki-NLP/opus-mt-mul-en"
+
+    def test_huggingface_result_not_cached_on_redis_error(self):
+        """Redis setex error should not break translation."""
+        text = "Habari"
+
+        with patch("apps.nlp.pipeline.translation_service._get_redis_client") as mock_redis:
+            redis_instance = MagicMock()
+            redis_instance.get.return_value = None
+            redis_instance.setex.side_effect = Exception("Redis write error")
+            mock_redis.return_value = redis_instance
+
+            with patch(
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "Greetings"}]
+                mock_get_pipe.return_value = pipe_instance
+
+                result, context = translate_to_english(text, source_language="sw")
+
+                # Translation should still succeed even if caching fails
+                assert result == "Greetings"
+                assert "translation_failed" not in context
+
+    def test_no_redis_translation_still_works(self):
+        """Translation should work when Redis is unavailable."""
+        text = "Habari"
+
+        with patch(
+            "apps.nlp.pipeline.translation_service._get_redis_client",
+            return_value=None,
+        ):
+            with patch(
+                "apps.nlp.pipeline.translation_service._get_translation_pipeline"
+            ) as mock_get_pipe:
+                pipe_instance = MagicMock()
+                pipe_instance.return_value = [{"translation_text": "Greetings"}]
+                mock_get_pipe.return_value = pipe_instance
+
+                result, context = translate_to_english(text, source_language="sw")
+
+                assert result == "Greetings"
+                assert "translation_failed" not in context
+

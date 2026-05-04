@@ -221,6 +221,64 @@ class TestPipelineConsumer:
 
         assert not Alert.objects.filter(feedback=feedback).exists()
 
+    def test_low_confidence_swahili_still_translates(self, feedback):
+        """Swahili should be translated even below the generic confidence threshold."""
+        with mock.patch(
+            "apps.nlp.pipeline.language_detector.detect_language",
+            return_value=("sw", 0.30),
+        ), mock.patch(
+            "apps.nlp.pipeline.translation_service.translate_to_english",
+            return_value=("Translated Swahili text", {}),
+        ) as mock_translate, mock.patch(
+            "apps.nlp.pipeline.topic_classifier.classify_topics",
+            return_value=([], {}),
+        ), mock.patch(
+            "apps.nlp.pipeline.urgency_assessor.assess_urgency",
+            return_value=("Low", "default"),
+        ), mock.patch(
+            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
+            return_value=(None, 0.0),
+        ), mock.patch(
+            "apps.nlp.pipeline.location_extractor.extract_location",
+            return_value=None,
+        ):
+            process_feedback(feedback.feedback_id)
+
+        feedback.refresh_from_db()
+        assert feedback.status == "Processed"
+        assert feedback.message_text_en == "Translated Swahili text"
+        mock_translate.assert_called_once()
+
+    def test_low_confidence_non_swahili_skips_translation(self, feedback):
+        """Non-whitelisted low-confidence language should skip translation."""
+        feedback.message_text = "Habari yako"
+        feedback.save(update_fields=["message_text"])
+
+        with mock.patch(
+            "apps.nlp.pipeline.language_detector.detect_language",
+            return_value=("fr", 0.30),
+        ), mock.patch(
+            "apps.nlp.pipeline.translation_service.translate_to_english",
+        ) as mock_translate, mock.patch(
+            "apps.nlp.pipeline.topic_classifier.classify_topics",
+            return_value=([], {}),
+        ), mock.patch(
+            "apps.nlp.pipeline.urgency_assessor.assess_urgency",
+            return_value=("Low", "default"),
+        ), mock.patch(
+            "apps.nlp.pipeline.sentiment_analyser.analyse_sentiment",
+            return_value=(None, 0.0),
+        ), mock.patch(
+            "apps.nlp.pipeline.location_extractor.extract_location",
+            return_value=None,
+        ):
+            process_feedback(feedback.feedback_id)
+
+        feedback.refresh_from_db()
+        assert feedback.status == "Processed"
+        assert feedback.message_text_en == "Habari yako"
+        mock_translate.assert_not_called()
+
     def test_retry_logic_with_exponential_backoff(self, feedback):
         """Failed attempts should retry with correct delays (30s, 120s, 300s)."""
         attempt_count = [0]

@@ -17,7 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 RUN pip install --upgrade pip \
-    && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+    # Docker builds use CPU-only torch to avoid downloading multi-GB CUDA wheels.
+    && sed 's/^torch==2\.4\.1$/torch==2.4.1+cpu/' requirements.txt > requirements.docker.txt \
+    && pip wheel --no-cache-dir --wheel-dir /wheels \
+       --extra-index-url https://download.pytorch.org/whl/cpu \
+       -r requirements.docker.txt
 
 # ─── Stage 2: runtime ──────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -50,8 +54,9 @@ WORKDIR /app
 # Install wheels built in the builder stage
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
-RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.txt \
-    && rm -rf /wheels requirements.txt
+RUN sed 's/^torch==2\.4\.1$/torch==2.4.1+cpu/' requirements.txt > requirements.docker.txt \
+    && pip install --no-cache-dir --no-index --find-links /wheels -r requirements.docker.txt \
+    && rm -rf /wheels requirements.txt requirements.docker.txt
 
 # Copy application source
 COPY --chown=appuser:appgroup . .

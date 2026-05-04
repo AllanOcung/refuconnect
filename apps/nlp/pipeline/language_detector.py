@@ -80,6 +80,35 @@ _SWAHILI_HINT_WORDS = {
     "mapema",
     "alifika",
     "hakukuta",
+    # carry / luggage / help-me phrases
+    "nisaidie",
+    "kubeba",
+    "mzigo",
+    "huu",
+    "hiyo",
+    "hii",
+    "huyu",
+    "yeye",
+    "kwenda",
+    "kuenda",
+    "kwake",
+    "kwetu",
+    "pamoja",
+    "bado",
+    "sawa",
+    "asante",
+    "karibu",
+    "ndiyo",
+    "hapana",
+    "sijui",
+    "naomba",
+    "omba",
+    "tena",
+    "kwanza",
+    "baadaye",
+    "sasa",
+    "kesho",
+    "jana",
 }
 
 _ENGLISH_HINT_WORDS = {
@@ -255,7 +284,7 @@ def _detect_with_afrolid(text: str) -> tuple[str, float, dict]:
     review_flags["top_predictions"] = predictions
     for lang, confidence in predictions:
         if lang in _SUPPORTED_LANGUAGES:
-            if confidence < getattr(settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.85):
+            if confidence < getattr(settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.75):
                 review_flags["needs_language_review"] = True
             return lang, confidence, review_flags
 

@@ -177,8 +177,8 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 CELERY_TASK_TRACK_STARTED = True
-CELERY_TASK_TIME_LIMIT = 300          # 5 minutes hard limit
-CELERY_TASK_SOFT_TIME_LIMIT = 240     # 4 minutes soft limit
+CELERY_TASK_TIME_LIMIT = 1200         # 20 minutes hard limit (allows first-time HF model download)
+CELERY_TASK_SOFT_TIME_LIMIT = 1140    # 19 minutes soft limit
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
@@ -213,6 +213,16 @@ AFROLID_MODEL_PATH = os.environ.get("AFROLID_MODEL_PATH", str(BASE_DIR / "models
 # Optional external AfroLID microservice URL (e.g. http://afrolid:8000)
 AFROLID_SERVICE_URL = os.environ.get("AFROLID_SERVICE_URL", "")
 
+# Ensure HuggingFace cache paths are exported before transformers/huggingface_hub import.
+HUGGINGFACE_CACHE_DIR = os.environ.get(
+    "HUGGINGFACE_CACHE_DIR", str(BASE_DIR / "models" / "huggingface")
+)
+os.environ.setdefault("HF_HOME", HUGGINGFACE_CACHE_DIR)
+os.environ.setdefault("TRANSFORMERS_CACHE", HUGGINGFACE_CACHE_DIR)
+os.environ.setdefault(
+    "HUGGINGFACE_HUB_CACHE", os.path.join(HUGGINGFACE_CACHE_DIR, "hub")
+)
+
 # ─── Language Detection Thresholds ───────────────────────────────────────────
 # Per-language confidence thresholds for language detection
 LANGUAGE_CONFIDENCE_THRESHOLDS = {
@@ -221,7 +231,10 @@ LANGUAGE_CONFIDENCE_THRESHOLDS = {
 }
 
 # Minimum confidence required to proceed with translation
-LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION = 0.85
+LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION = 0.75
+
+# Always translate these languages even when confidence is below threshold.
+LANGUAGES_ALWAYS_TRANSLATE = ("sw",)
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 LOGGING = {
