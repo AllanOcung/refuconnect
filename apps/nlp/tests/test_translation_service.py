@@ -319,10 +319,10 @@ class TestTranslationService:
                 mock_get_pipe.assert_called_once_with("unknown")
                 assert result == "result"
 
-    def test_model_selection_sw_uses_multilingual_fallback(self):
-        """Swahili uses the multilingual fallback (no dedicated sw-en model on HuggingFace)."""
+    def test_model_selection_sw_uses_swahili_specific_model(self):
+        """Swahili should use the dedicated swc-en translation model."""
         model = _get_model_name("sw")
-        assert model == "Helsinki-NLP/opus-mt-mul-en"
+        assert model == "Helsinki-NLP/opus-mt-swc-en"
 
     def test_model_selection_unknown_uses_fallback_model(self):
         """'unknown' and 'other' source languages should use the multilingual fallback."""

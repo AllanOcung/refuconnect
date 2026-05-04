@@ -145,6 +145,7 @@ def test_sms_multipart_first_part_buffered(mock_cls, mock_task):
         "to": "20121",
         "id": "ATXid_mp_first",
         "linkId": "LINKXYZ",
+        "partNumber": "1",
         "date": "2025-01-15 10:00:00",
     }
     req = _build_request(mp_payload)
