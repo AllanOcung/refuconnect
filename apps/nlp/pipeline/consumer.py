@@ -185,8 +185,8 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
     from apps.nlp.pipeline.language_detector import detect_language
     from apps.nlp.pipeline.translation_service import translate_to_english
     from apps.nlp.pipeline.topic_classifier import classify_topics
-    from apps.nlp.pipeline.urgency_assessor import assess_urgency
-    from apps.nlp.pipeline.sentiment_analyser import analyse_sentiment
+    from apps.nlp.pipeline.urgency_assessor import assess_feedback_urgency
+    from apps.nlp.pipeline.sentiment_analyser import analyse_feedback_sentiment
     from apps.nlp.pipeline.location_extractor import extract_location
     # TopicClassifier persists FeedbackCategory rows internally (C-08).
 
@@ -279,12 +279,17 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
         context.set_review_flag("needs_category_review")
 
     # ── Step 5: Urgency assessment ────────────────────────────────────────────
-    urgency_level, urgency_rule = assess_urgency(feedback.message_text_en)
+    urgency_level, urgency_rule, urgency_ctx = assess_feedback_urgency(feedback)
     feedback.urgency_level = urgency_level
     context.urgency_rule = urgency_rule
 
     # ── Step 6: Sentiment analysis ────────────────────────────────────────────
-    sentiment_obj, sentiment_conf = analyse_sentiment(feedback.message_text_en)
+    sentiment_obj, sentiment_conf, sentiment_ctx = analyse_feedback_sentiment(
+        feedback,
+        translation_failed=context.translation_failed,
+    )
+    if sentiment_ctx.get("sentiment_used_untranslated_text"):
+        context.set_review_flag("sentiment_used_untranslated_text")
     feedback.sentiment = sentiment_obj
     feedback.sentiment_confidence = sentiment_conf
 

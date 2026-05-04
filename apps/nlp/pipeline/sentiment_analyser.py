@@ -1,15 +1,12 @@
-"""
-Sentiment analysis using VADER for English and XLM-RoBERTa for other languages.
+"""C-10 sentiment analysis.
 
-VADER is rule-based and works well on short, social-media-style text in English.
-For non-English text, XLM-RoBERTa (cross-lingual multilingual model) is used.
-The NLP pipeline translates to English first when possible for best accuracy.
+English text uses VADER (rule-based, fast). Non-English text uses
+CardiffNLP XLM-RoBERTa sentiment model.
 """
 from __future__ import annotations
 
 import logging
 import re
-import string
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -42,12 +39,12 @@ def _get_xlm_analyser():
 
         _xlm_analyser = pipeline(
             "sentiment-analysis",
-            model="xlm-roberta-base",
-            device=-1,  # CPU
+            model="cardiffnlp/twitter-xlm-roberta-base-sentiment",
+            device=-1,
         )
-        logger.info("XLM-RoBERTa sentiment analyser loaded.")
+        logger.info("CardiffNLP XLM-RoBERTa sentiment analyser loaded.")
     except Exception:
-        logger.exception("Failed to load XLM-RoBERTa sentiment analyser.")
+        logger.exception("Failed to load CardiffNLP XLM-RoBERTa sentiment analyser.")
         _xlm_analyser = None
 
     return _xlm_analyser
@@ -57,17 +54,23 @@ def _clean_text(text: str) -> str:
     """
     Clean text for sentiment analysis.
 
-    Removes punctuation (except accented chars), collapses whitespace, strips.
+    Strips excessive punctuation runs, collapses whitespace, and trims edges.
     """
-    # Remove punctuation (keep alphanumeric, spaces, accented chars)
-    # Keep unicode letters but remove ASCII punctuation
-    text = "".join(
-        c if c not in string.punctuation else " " for c in text
-    )
-    # Collapse multiple whitespaces
+    text = re.sub(r"([!?.,;:])\1+", r"\1", text)
     text = re.sub(r"\s+", " ", text)
-    # Strip leading/trailing whitespace
     return text.strip()
+
+
+def _map_xlm_label(label_raw: str) -> str:
+    mapping = {
+        "LABEL_0": "Negative",
+        "LABEL_1": "Neutral",
+        "LABEL_2": "Positive",
+        "NEGATIVE": "Negative",
+        "NEUTRAL": "Neutral",
+        "POSITIVE": "Positive",
+    }
+    return mapping.get((label_raw or "").upper(), "Neutral")
 
 
 def analyse_sentiment(
@@ -92,16 +95,16 @@ def analyse_sentiment(
         and a confidence score in [0, 1].
         Returns ``(None, 0.0)`` if analysis is unavailable.
     """
-    from apps.feedback.models import Sentiment  # deferred to avoid circular import
-
     if not text or not text.strip():
         return _lookup_sentiment("Uncertain"), 0.5
 
-    # Clean text
     cleaned_text = _clean_text(text)
+    if not cleaned_text:
+        return _lookup_sentiment("Uncertain"), 0.5
 
-    # Use VADER for English
-    if language_code is None or language_code == "en":
+    use_vader = language_code in (None, "en") and not translation_failed
+
+    if use_vader:
         analyser = _get_vader_analyser()
         if analyser is None:
             return None, 0.0
@@ -111,46 +114,37 @@ def analyse_sentiment(
 
         if compound >= 0.05:
             label = "Positive"
-            confidence = min(compound, 1.0)
         elif compound <= -0.05:
             label = "Negative"
-            confidence = min(abs(compound), 1.0)
-        elif compound == 0.0:
-            label = "Uncertain"
-            confidence = 0.5
         else:
-            # Near-neutral
             label = "Neutral"
-            confidence = 1.0 - abs(compound)
+        confidence = max(
+            float(scores.get("pos", 0.0)),
+            float(scores.get("neu", 0.0)),
+            float(scores.get("neg", 0.0)),
+        )
+
+        if confidence < 0.60:
+            label = "Uncertain"
 
         sentiment_obj = _lookup_sentiment(label)
         return sentiment_obj, round(confidence, 3)
 
-    # Use XLM-RoBERTa for non-English
     analyser = _get_xlm_analyser()
     if analyser is None:
         logger.warning("XLM-RoBERTa analyser unavailable for language: %s", language_code)
         return None, 0.0
 
     try:
-        result = analyser(cleaned_text[:512])  # Limit to 512 chars for model
+        result = analyser(cleaned_text[:512])
         if not result:
             return _lookup_sentiment("Uncertain"), 0.5
 
-        # result is a list: [{"label": "POSITIVE|NEGATIVE|NEUTRAL", "score": float}]
         output = result[0]
-        label_raw = output.get("label", "NEUTRAL").upper()
-        score = float(output.get("score", 0.5))
+        label_raw = str(output.get("label", "LABEL_1"))
+        score = float(output.get("score", 0.0))
+        label = _map_xlm_label(label_raw)
 
-        # Map to Sentiment labels
-        if label_raw == "POSITIVE":
-            label = "Positive"
-        elif label_raw == "NEGATIVE":
-            label = "Negative"
-        else:
-            label = "Neutral"
-
-        # Apply uncertain threshold: if confidence < 0.60, mark as uncertain
         if score < 0.60:
             label = "Uncertain"
 
@@ -171,3 +165,45 @@ def _lookup_sentiment(label: str):
     except Exception:
         logger.warning("Sentiment lookup failed for label '%s'.", label)
         return None
+
+
+def analyse_feedback_sentiment(
+    feedback,
+    *,
+    translation_failed: bool = False,
+) -> tuple[Optional[object], float, dict[str, bool]]:
+    """
+    Analyse and assign sentiment on a Feedback-like object without saving.
+
+    Returns:
+        (sentiment_obj, confidence, context)
+    """
+    context: dict[str, bool] = {"sentiment_used_untranslated_text": False}
+
+    translated_text = (feedback.message_text_en or "").strip()
+    original_text = (feedback.message_text or "").strip()
+    language = (feedback.language or "unknown").lower()
+
+    if translated_text and translation_failed:
+        text_for_sentiment = original_text
+        language_code = language
+        context["sentiment_used_untranslated_text"] = True
+    elif language == "en":
+        text_for_sentiment = translated_text or original_text
+        language_code = "en"
+    elif translated_text and not translation_failed:
+        text_for_sentiment = translated_text
+        language_code = "en"
+    else:
+        text_for_sentiment = original_text
+        language_code = language
+
+    sentiment_obj, confidence = analyse_sentiment(
+        text_for_sentiment,
+        language_code=language_code,
+        translation_failed=translation_failed and language_code != "en",
+    )
+
+    feedback.sentiment = sentiment_obj
+    feedback.sentiment_confidence = confidence
+    return sentiment_obj, confidence, context

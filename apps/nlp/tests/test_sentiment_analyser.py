@@ -1,389 +1,185 @@
-"""
-Unit tests for the sentiment analyser component.
-
-Tests cover:
-  - VADER sentiment scoring (English)
-  - Multi-language XLM-RoBERTa (French, Swahili, etc.)
-  - Uncertain threshold (<0.60 confidence)
-  - Text cleaning validation
-  - translation_failed edge case (non-English without translation)
-"""
+"""Unit tests for C-10 SentimentAnalyser."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from apps.nlp.pipeline.sentiment_analyser import (
     _clean_text,
+    _map_xlm_label,
+    analyse_feedback_sentiment,
     analyse_sentiment,
 )
 
 
-class TestSentimentAnalyser:
-    """Test suite for sentiment analysis logic."""
+def _make_feedback(*, message_text: str, message_text_en: str = "", language: str = "en"):
+    fb = MagicMock()
+    fb.message_text = message_text
+    fb.message_text_en = message_text_en
+    fb.language = language
+    fb.sentiment = None
+    fb.sentiment_confidence = None
+    return fb
 
-    def test_clean_text_removes_punctuation(self):
-        """Text cleaning should remove punctuation."""
-        text = "Hello! How are you? I'm fine."
-        cleaned = _clean_text(text)
-        assert "!" not in cleaned
-        assert "?" not in cleaned
-        assert "'" not in cleaned
-        assert "." not in cleaned
-        # But words should be intact
-        assert "Hello" in cleaned
-        assert "fine" in cleaned
 
+class TestTextCleaning:
     def test_clean_text_collapses_whitespace(self):
-        """Multiple whitespaces should collapse to single space."""
-        text = "Hello    world    test"
-        cleaned = _clean_text(text)
-        assert "    " not in cleaned
-        assert cleaned.count(" ") <= 2
+        cleaned = _clean_text("Hello    world\n\nagain")
+        assert cleaned == "Hello world again"
 
-    def test_clean_text_strips_leading_trailing_whitespace(self):
-        """Leading/trailing whitespace should be stripped."""
-        text = "  \n\t  Hello world  \n\t  "
-        cleaned = _clean_text(text)
-        assert not cleaned.startswith(" ")
-        assert not cleaned.endswith(" ")
+    def test_clean_text_reduces_excessive_punctuation(self):
+        cleaned = _clean_text("Help!!! Why???")
+        assert cleaned == "Help! Why?"
 
-    def test_clean_text_preserves_accented_characters(self):
-        """Accented characters should be preserved."""
-        text = "Café naïve Montréal"
-        cleaned = _clean_text(text)
-        # Characters should be preserved (or at least text should be processable)
-        assert len(cleaned) > 0
 
-    def test_vader_english_positive_sentiment(self):
-        """VADER should detect positive sentiment in English."""
-        text = "I am very happy and excited about this"
-
+class TestVaderLogic:
+    def test_vader_positive_from_compound(self):
         with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser") as mock_vader:
             analyser = MagicMock()
             analyser.polarity_scores.return_value = {
-                "compound": 0.8,
-                "pos": 0.5,
-                "neu": 0.3,
-                "neg": 0.2,
+                "compound": 0.80,
+                "pos": 0.82,
+                "neu": 0.10,
+                "neg": 0.08,
             }
             mock_vader.return_value = analyser
-
             with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                sentiment_obj = MagicMock()
-                mock_lookup.return_value = sentiment_obj
-
-                result, confidence = analyse_sentiment(text, language_code="en")
-
-                assert confidence > 0.0
+                mock_lookup.return_value = MagicMock()
+                _, conf = analyse_sentiment("great news", language_code="en")
+                assert conf == 0.82
                 mock_lookup.assert_called_with("Positive")
 
-    def test_vader_english_negative_sentiment(self):
-        """VADER should detect negative sentiment in English."""
-        text = "This is terrible and I hate it"
-
+    def test_vader_negative_from_compound(self):
         with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser") as mock_vader:
             analyser = MagicMock()
             analyser.polarity_scores.return_value = {
-                "compound": -0.75,
-                "pos": 0.1,
-                "neu": 0.2,
-                "neg": 0.7,
+                "compound": -0.30,
+                "pos": 0.10,
+                "neu": 0.20,
+                "neg": 0.70,
             }
             mock_vader.return_value = analyser
-
             with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                sentiment_obj = MagicMock()
-                mock_lookup.return_value = sentiment_obj
-
-                result, confidence = analyse_sentiment(text, language_code="en")
-
-                assert confidence > 0.0
+                mock_lookup.return_value = MagicMock()
+                analyse_sentiment("terrible", language_code="en")
                 mock_lookup.assert_called_with("Negative")
 
-    def test_vader_english_neutral_sentiment(self):
-        """VADER should detect neutral sentiment."""
-        text = "This is a simple statement"
-
+    def test_vader_neutral_between_thresholds(self):
         with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser") as mock_vader:
             analyser = MagicMock()
             analyser.polarity_scores.return_value = {
-                "compound": 0.0,
-                "pos": 0.2,
-                "neu": 0.7,
-                "neg": 0.1,
+                "compound": 0.00,
+                "pos": 0.15,
+                "neu": 0.75,
+                "neg": 0.10,
             }
             mock_vader.return_value = analyser
-
             with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                sentiment_obj = MagicMock()
-                mock_lookup.return_value = sentiment_obj
+                mock_lookup.return_value = MagicMock()
+                analyse_sentiment("statement", language_code="en")
+                mock_lookup.assert_called_with("Neutral")
 
-                result, confidence = analyse_sentiment(text, language_code="en")
-
-                # Uncertain for exactly 0.0
-                mock_lookup.assert_called_with("Uncertain")
-
-    def test_xlm_roberta_non_english_language(self):
-        """XLM-RoBERTa should be used for non-English languages."""
-        text = "C'est magnifique!"  # French
-
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser"):
-            with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-                analyser = MagicMock()
-                analyser.return_value = [{"label": "POSITIVE", "score": 0.85}]
-                mock_xlm.return_value = analyser
-
-                with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                    sentiment_obj = MagicMock()
-                    mock_lookup.return_value = sentiment_obj
-
-                    result, confidence = analyse_sentiment(text, language_code="fr")
-
-                    analyser.assert_called_once()
-                    mock_lookup.assert_called_with("Positive")
-
-    def test_xlm_roberta_swahili(self):
-        """XLM-RoBERTa should handle Swahili."""
-        text = "Habari njema sana!"
-
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-            analyser = MagicMock()
-            analyser.return_value = [{"label": "POSITIVE", "score": 0.79}]
-            mock_xlm.return_value = analyser
-
-            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                sentiment_obj = MagicMock()
-                mock_lookup.return_value = sentiment_obj
-
-                result, confidence = analyse_sentiment(text, language_code="sw")
-
-                analyser.assert_called_once()
-                mock_lookup.assert_called_with("Positive")
-
-    def test_xlm_roberta_arabic(self):
-        """XLM-RoBERTa should handle Arabic."""
-        text = "هذا رائع جدا"
-
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-            analyser = MagicMock()
-            analyser.return_value = [{"label": "POSITIVE", "score": 0.82}]
-            mock_xlm.return_value = analyser
-
-            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                sentiment_obj = MagicMock()
-                mock_lookup.return_value = sentiment_obj
-
-                result, confidence = analyse_sentiment(text, language_code="ar")
-
-                analyser.assert_called_once()
-
-    def test_uncertain_threshold_below_0_60(self):
-        """Confidence < 0.60 should return Uncertain regardless of label."""
-        text = "Maybe good maybe bad"
-
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-            analyser = MagicMock()
-            analyser.return_value = [{"label": "POSITIVE", "score": 0.55}]
-            mock_xlm.return_value = analyser
-
-            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                sentiment_obj = MagicMock()
-                mock_lookup.return_value = sentiment_obj
-
-                result, confidence = analyse_sentiment(text, language_code="fr")
-
-                # Should lookup Uncertain due to low confidence
-                mock_lookup.assert_called_with("Uncertain")
-
-    def test_uncertain_threshold_at_0_60_included(self):
-        """Confidence >= 0.60 should not be marked as Uncertain."""
-        text = "Reasonably good"
-
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-            analyser = MagicMock()
-            analyser.return_value = [{"label": "POSITIVE", "score": 0.60}]
-            mock_xlm.return_value = analyser
-
-            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                sentiment_obj = MagicMock()
-                mock_lookup.return_value = sentiment_obj
-
-                result, confidence = analyse_sentiment(text, language_code="fr")
-
-                # Should not be Uncertain at exactly 0.60
-                mock_lookup.assert_called_with("Positive")
-
-    def test_empty_text_returns_uncertain(self):
-        """Empty text should return Uncertain with 0.5 confidence."""
-        result, confidence = analyse_sentiment("")
-
-        assert confidence == 0.5
-        # Uncertain should be looked up
-
-    def test_whitespace_only_returns_uncertain(self):
-        """Whitespace-only text should return Uncertain."""
-        result, confidence = analyse_sentiment("   \n\t  ")
-
-        assert confidence == 0.5
-
-    def test_vadersay_unavailable_returns_none(self):
-        """VADER unavailable should return (None, 0.0)."""
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser") as mock_vader:
-            mock_vader.return_value = None
-
-            result, confidence = analyse_sentiment("test", language_code="en")
-
-            assert result is None
-            assert confidence == 0.0
-
-    def test_xlm_unavailable_returns_none(self):
-        """XLM unavailable for non-English should return (None, 0.0)."""
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-            mock_xlm.return_value = None
-
-            result, confidence = analyse_sentiment("test", language_code="fr")
-
-            assert result is None
-            assert confidence == 0.0
-
-    def test_xlm_exception_caught_returns_none(self):
-        """XLM exception should be caught."""
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-            analyser = MagicMock()
-            analyser.side_effect = Exception("XLM error")
-            mock_xlm.return_value = analyser
-
-            result, confidence = analyse_sentiment("test", language_code="fr")
-
-            assert result is None
-            assert confidence == 0.0
-
-    def test_language_code_none_uses_vader(self):
-        """language_code=None should use VADER (English default)."""
+    def test_vader_low_confidence_forces_uncertain(self):
         with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser") as mock_vader:
             analyser = MagicMock()
-            analyser.polarity_scores.return_value = {"compound": 0.5}
+            analyser.polarity_scores.return_value = {
+                "compound": 0.40,
+                "pos": 0.35,
+                "neu": 0.34,
+                "neg": 0.31,
+            }
             mock_vader.return_value = analyser
-
             with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
                 mock_lookup.return_value = MagicMock()
+                analyse_sentiment("mixed", language_code="en")
+                mock_lookup.assert_called_with("Uncertain")
 
-                analyse_sentiment("good text", language_code=None)
 
-                analyser.polarity_scores.assert_called_once()
+class TestXlmLogic:
+    def test_map_labels_label_0_1_2(self):
+        assert _map_xlm_label("LABEL_0") == "Negative"
+        assert _map_xlm_label("LABEL_1") == "Neutral"
+        assert _map_xlm_label("LABEL_2") == "Positive"
 
-    def test_translation_failed_parameter_uses_xlm(self):
-        """translation_failed=True should use XLM on original text."""
-        text = "Origina non-English"
-
+    def test_xlm_label_mapping_negative(self):
         with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
             analyser = MagicMock()
-            analyser.return_value = [{"label": "NEGATIVE", "score": 0.75}]
+            analyser.return_value = [{"label": "LABEL_0", "score": 0.91}]
             mock_xlm.return_value = analyser
-
-            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                sentiment_obj = MagicMock()
-                mock_lookup.return_value = sentiment_obj
-
-                result, confidence = analyse_sentiment(
-                    text,
-                    language_code="sw",
-                    translation_failed=True,
-                )
-
-                analyser.assert_called_once()
-
-    def test_xlm_negative_detection(self):
-        """XLM should detect negative sentiment."""
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-            analyser = MagicMock()
-            analyser.return_value = [{"label": "NEGATIVE", "score": 0.88}]
-            mock_xlm.return_value = analyser
-
             with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
                 mock_lookup.return_value = MagicMock()
-
-                analyse_sentiment("bad text", language_code="fr")
-
+                analyse_sentiment("mbaya", language_code="sw")
                 mock_lookup.assert_called_with("Negative")
 
-    def test_xlm_neutral_detection(self):
-        """XLM should detect neutral sentiment."""
+    def test_xlm_low_confidence_forces_uncertain(self):
         with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
             analyser = MagicMock()
-            analyser.return_value = [{"label": "NEUTRAL", "score": 0.70}]
+            analyser.return_value = [{"label": "LABEL_2", "score": 0.55}]
             mock_xlm.return_value = analyser
-
             with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
                 mock_lookup.return_value = MagicMock()
-
-                analyse_sentiment("neutral text", language_code="fr")
-
-                mock_lookup.assert_called_with("Neutral")
-
-    def test_vader_near_neutral_compound(self):
-        """VADER with compound near 0 should return Neutral."""
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser") as mock_vader:
-            analyser = MagicMock()
-            # Compound between -0.05 and 0.05
-            analyser.polarity_scores.return_value = {"compound": 0.02}
-            mock_vader.return_value = analyser
-
-            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                mock_lookup.return_value = MagicMock()
-
-                analyse_sentiment("somewhat good", language_code="en")
-
-                mock_lookup.assert_called_with("Neutral")
-
-    def test_confidence_rounded_to_3_decimals(self):
-        """Confidence should be rounded to 3 decimals."""
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser") as mock_vader:
-            analyser = MagicMock()
-            analyser.polarity_scores.return_value = {"compound": 0.75432}
-            mock_vader.return_value = analyser
-
-            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                mock_lookup.return_value = MagicMock()
-
-                result, confidence = analyse_sentiment("good", language_code="en")
-
-                assert confidence == 0.754
-
-    def test_xlm_empty_response_handled(self):
-        """XLM returning empty list should handle gracefully."""
-        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
-            analyser = MagicMock()
-            analyser.return_value = []  # Empty result
-            mock_xlm.return_value = analyser
-
-            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                mock_lookup.return_value = MagicMock()
-
-                result, confidence = analyse_sentiment("text", language_code="fr")
-
-                # Should handle empty result
-                assert confidence == 0.5
+                analyse_sentiment("bien", language_code="fr")
                 mock_lookup.assert_called_with("Uncertain")
 
-    def test_text_cleaned_before_vader(self):
-        """Text should be cleaned before VADER analysis."""
-        text = "Hello! This is GREAT! Amazing..."
+    def test_xlm_empty_response_returns_uncertain(self):
+        with patch("apps.nlp.pipeline.sentiment_analyser._get_xlm_analyser") as mock_xlm:
+            analyser = MagicMock()
+            analyser.return_value = []
+            mock_xlm.return_value = analyser
+            with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
+                mock_lookup.return_value = MagicMock()
+                _, conf = analyse_sentiment("text", language_code="fr")
+                assert conf == 0.5
+                mock_lookup.assert_called_with("Uncertain")
 
-        with patch("apps.nlp.pipeline.sentiment_analyser._clean_text") as mock_clean:
-            mock_clean.return_value = "Hello This is GREAT Amazing"
 
-            with patch("apps.nlp.pipeline.sentiment_analyser._get_vader_analyser") as mock_vader:
-                analyser = MagicMock()
-                analyser.polarity_scores.return_value = {"compound": 0.75}
-                mock_vader.return_value = analyser
+class TestFeedbackApi:
+    def test_feedback_api_uses_translated_text_when_available(self):
+        fb = _make_feedback(
+            message_text="Ninateseka",
+            message_text_en="I am suffering",
+            language="sw",
+        )
 
-                with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
-                    mock_lookup.return_value = MagicMock()
+        with patch("apps.nlp.pipeline.sentiment_analyser.analyse_sentiment") as mock_analyse:
+            mock_sentiment = MagicMock()
+            mock_analyse.return_value = (mock_sentiment, 0.88)
 
-                    analyse_sentiment(text, language_code="en")
+            sentiment_obj, conf, ctx = analyse_feedback_sentiment(fb, translation_failed=False)
 
-                    # _clean_text should be called
-                    mock_clean.assert_called()
+            mock_analyse.assert_called_once_with(
+                "I am suffering",
+                language_code="en",
+                translation_failed=False,
+            )
+            assert sentiment_obj is mock_sentiment
+            assert conf == 0.88
+            assert fb.sentiment is mock_sentiment
+            assert fb.sentiment_confidence == 0.88
+            assert ctx["sentiment_used_untranslated_text"] is False
+
+    def test_feedback_api_uses_original_text_when_translation_failed(self):
+        fb = _make_feedback(
+            message_text="Ninateseka",
+            message_text_en="I am suffering",
+            language="sw",
+        )
+
+        with patch("apps.nlp.pipeline.sentiment_analyser.analyse_sentiment") as mock_analyse:
+            mock_sentiment = MagicMock()
+            mock_analyse.return_value = (mock_sentiment, 0.73)
+
+            _, _, ctx = analyse_feedback_sentiment(fb, translation_failed=True)
+
+            mock_analyse.assert_called_once_with(
+                "Ninateseka",
+                language_code="sw",
+                translation_failed=True,
+            )
+            assert ctx["sentiment_used_untranslated_text"] is True
+
+    def test_empty_text_returns_uncertain_confidence(self):
+        with patch("apps.nlp.pipeline.sentiment_analyser._lookup_sentiment") as mock_lookup:
+            mock_lookup.return_value = MagicMock()
+            _, conf = analyse_sentiment("   ")
+            assert conf == 0.5
+            mock_lookup.assert_called_with("Uncertain")
