@@ -6,7 +6,7 @@ from __future__ import annotations
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
-from apps.dashboard.models import AuditLog, User
+from apps.dashboard.models import AuditLog, ReportExport, ScheduledReport, User
 
 
 @admin.register(User)
@@ -19,7 +19,8 @@ class UserAdmin(BaseUserAdmin):
 
     fieldsets = (
         ("Credentials", {"fields": ("email", "password")}),
-        ("Personal", {"fields": ("full_name", "organisation", "phone_number")}),
+        ("Personal", {"fields": ("full_name", "organisation", "preferred_language")}),
+        ("Alerts", {"fields": ("receive_alerts", "alert_phone")}),
         ("Role & Status", {"fields": ("role", "status")}),
         ("Activity", {"fields": ("last_login_at", "failed_login_count", "created_at")}),
         ("Permissions", {"fields": ("is_superuser", "groups", "user_permissions")}),
@@ -63,3 +64,27 @@ class AuditLogAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None) -> bool:
         return False
+
+
+@admin.register(ScheduledReport)
+class ScheduledReportAdmin(admin.ModelAdmin):
+    list_display = ("report_id", "user", "template_id", "format", "frequency", "next_run_at", "is_active")
+    list_filter = ("format", "frequency", "is_active")
+    search_fields = ("user__email", "template_id")
+
+
+@admin.register(ReportExport)
+class ReportExportAdmin(admin.ModelAdmin):
+    list_display = ("export_id", "user", "template_id", "format", "row_count", "generated_at")
+    list_filter = ("format", "template_id")
+    search_fields = ("user__email", "template_id")
+    readonly_fields = (
+        "export_id",
+        "user",
+        "template_id",
+        "format",
+        "filters_snapshot",
+        "row_count",
+        "file_size_bytes",
+        "generated_at",
+    )

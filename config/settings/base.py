@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import dj_database_url
+from celery.schedules import crontab
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -53,6 +54,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "apps.common.middleware.SessionInactivityMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -159,8 +161,8 @@ REST_FRAMEWORK = {
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=24),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "ALGORITHM": "HS256",
@@ -181,6 +183,13 @@ CELERY_TASK_TIME_LIMIT = 300          # 5 minutes hard limit
 CELERY_TASK_SOFT_TIME_LIMIT = 240     # 4 minutes soft limit
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+CELERY_BEAT_SCHEDULE = {
+    "send-scheduled-dashboard-reports": {
+        "task": "apps.dashboard.tasks.send_scheduled_report",
+        "schedule": crontab(hour=7, minute=0),
+        "options": {"expires": 60 * 60},
+    },
+}
 
 # ─── Encryption ──────────────────────────────────────────────────────────────
 ENCRYPTION_KEY = os.environ.get("ENCRYPTION_KEY", "")
@@ -203,6 +212,14 @@ PHONE_HASH_SALT = os.environ.get("PHONE_HASH_SALT", "")
 
 # Alias so adapters can try AT_API_KEY first (shorter env var name)
 AT_API_KEY = os.environ.get("AT_API_KEY", AFRICAS_TALKING_API_KEY)
+
+# Email / dashboard session / report settings
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL", "RefuConnect <noreply@refuconnect.org>"
+)
+REPORT_LOGO_PATH = os.environ.get("REPORT_LOGO_PATH", "static/images/logo.png")
+REPORT_MAX_RAW_ROWS = int(os.environ.get("REPORT_MAX_RAW_ROWS", "10000"))
+SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("SESSION_INACTIVITY_TIMEOUT", "900"))
 
 # ─── AI model paths ──────────────────────────────────────────────────────────
 FASTTEXT_MODEL_PATH = os.environ.get("FASTTEXT_MODEL_PATH", str(BASE_DIR / "models" / "lid.176.bin"))
