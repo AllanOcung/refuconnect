@@ -212,6 +212,7 @@ class AnalyticsEngine:
             "geographic_distribution": geographic_distribution,
             "theme_summary": self.get_theme_summary(),
             "urgent_open_count": Alert.objects.filter(
+                feedback_id__in=qs.values("pk"),
                 status=Alert.AlertStatus.OPEN,
                 priority_level=Alert.Priority.HIGH,
             ).count(),

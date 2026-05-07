@@ -22,10 +22,11 @@ from apps.dashboard.serializers import (
     FeedbackUpdateSerializer,
 )
 from apps.dashboard.services.analytics_engine import AnalyticsEngine
+from apps.dashboard.views.mixins import AuditLogMixin
 from apps.feedback.models import Feedback, FeedbackCategory, FeedbackMedia
 
 
-class FeedbackListView(generics.ListAPIView):
+class FeedbackListView(AuditLogMixin, generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
     serializer_class = FeedbackListSerializer
     pagination_class = FeedbackPagination
@@ -44,7 +45,7 @@ class FeedbackListView(generics.ListAPIView):
         )
 
 
-class FeedbackDetailView(generics.GenericAPIView):
+class FeedbackDetailView(AuditLogMixin, generics.GenericAPIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
     serializer_class = FeedbackDetailSerializer
     lookup_field = "feedback_id"
@@ -146,7 +147,7 @@ class FeedbackDetailView(generics.GenericAPIView):
         return Response(self.get_serializer(feedback).data, status=status.HTTP_200_OK)
 
 
-class AuditLogView(generics.ListAPIView):
+class AuditLogView(AuditLogMixin, generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsAdministrator]
     serializer_class = AuditLogSerializer
     pagination_class = AuditLogPagination

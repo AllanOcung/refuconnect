@@ -15,9 +15,10 @@ from apps.dashboard.models import User
 from apps.dashboard.pagination import StandardResultsPagination
 from apps.dashboard.permissions import IsAdministrator
 from apps.dashboard.serializers import UserInviteSerializer, UserSerializer
+from apps.dashboard.views.mixins import AuditLogMixin
 
 
-class UserListView(generics.ListAPIView):
+class UserListView(AuditLogMixin, generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsAdministrator]
     serializer_class = UserSerializer
     pagination_class = StandardResultsPagination
@@ -36,7 +37,7 @@ class UserListView(generics.ListAPIView):
         return qs
 
 
-class UserInviteView(APIView):
+class UserInviteView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsAdministrator]
 
     def post(self, request: Request) -> Response:
@@ -59,7 +60,7 @@ class UserInviteView(APIView):
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
-class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
+class UserDetailView(AuditLogMixin, generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated, IsAdministrator]
     serializer_class = UserSerializer
     queryset = User.objects.all()
@@ -127,12 +128,12 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class UserUnlockView(APIView):
+class UserUnlockView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsAdministrator]
 
     def post(self, request: Request, user_id: int) -> Response:
         try:
-            user = User.objects.get(pk=user_id)
+            user = User.objects.get(user_id=user_id)
         except User.DoesNotExist:
             return Response({"detail": "User not found."}, status=status.HTTP_404_NOT_FOUND)
         old_status = user.status

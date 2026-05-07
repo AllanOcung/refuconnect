@@ -15,9 +15,10 @@ from apps.dashboard.permissions import IsNGOStaff
 from apps.dashboard.serializers import ReportExportSerializer, ReportGenerateSerializer
 from apps.dashboard.services.report_generator import ReportGenerator
 from apps.dashboard.tasks import generate_report_export_task
+from apps.dashboard.views.mixins import AuditLogMixin
 
 
-class ReportGenerateView(APIView):
+class ReportGenerateView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
 
     def post(self, request: Request) -> HttpResponse | Response:
@@ -81,7 +82,7 @@ class ReportGenerateView(APIView):
         return response
 
 
-class ReportHistoryView(generics.ListAPIView):
+class ReportHistoryView(AuditLogMixin, generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
     serializer_class = ReportExportSerializer
     pagination_class = StandardResultsPagination
@@ -90,7 +91,7 @@ class ReportHistoryView(generics.ListAPIView):
         return ReportExport.objects.filter(user=self.request.user).order_by("-generated_at")
 
 
-class ReportTaskStatusView(generics.RetrieveAPIView):
+class ReportTaskStatusView(AuditLogMixin, generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
     serializer_class = ReportExportSerializer
     lookup_field = "task_id"
@@ -100,7 +101,7 @@ class ReportTaskStatusView(generics.RetrieveAPIView):
         return ReportExport.objects.filter(user=self.request.user)
 
 
-class ReportTaskDownloadView(APIView):
+class ReportTaskDownloadView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
 
     def get(self, request: Request, task_id: str) -> HttpResponse | Response:

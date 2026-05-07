@@ -4,32 +4,6 @@ from rest_framework import serializers
 
 from apps.dashboard.models import AuditLog
 
-
-class AuditLogMixin:
-    audit_action = None
-
-    def log_action(
-        self,
-        request,
-        feedback=None,
-        field_changed=None,
-        old_value=None,
-        new_value=None,
-    ):
-        from apps.common.audit import log_audit_event
-
-        if self.audit_action:
-            log_audit_event(
-                user=request.user,
-                action=self.audit_action,
-                feedback=feedback,
-                field_changed=field_changed,
-                old_value=str(old_value) if old_value is not None else None,
-                new_value=str(new_value) if new_value is not None else None,
-                request=request,
-            )
-
-
 class AuditTrailSerializer(serializers.ModelSerializer):
     user_email = serializers.CharField(source="user.email", read_only=True, default=None)
 

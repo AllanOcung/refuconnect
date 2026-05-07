@@ -19,6 +19,7 @@ from apps.common.audit import AuditAction, log_audit_event
 from apps.common.encryption import decrypt_field, encrypt_field
 from apps.dashboard.models import User
 from apps.dashboard.permissions import IsAdministrator
+from apps.dashboard.views.mixins import AuditLogMixin
 
 _MAX_FAILED_ATTEMPTS = 5
 
@@ -38,7 +39,7 @@ def _password_is_valid(password: str) -> bool:
     )
 
 
-class LoginView(APIView):
+class LoginView(AuditLogMixin, APIView):
     permission_classes = [AllowAny]
 
     def post(self, request: Request) -> Response:
@@ -119,8 +120,9 @@ class LoginView(APIView):
         )
 
 
-class LogoutView(APIView):
+class LogoutView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated]
+    audit_action = AuditAction.LOGOUT
 
     def post(self, request: Request) -> Response:
         refresh_token = request.data.get("refresh")
@@ -134,12 +136,13 @@ class LogoutView(APIView):
         except TokenError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        log_audit_event(request.user, AuditAction.LOGOUT, request=request)
+        self.log_action(request)
         return Response({"detail": "Logged out successfully."}, status=status.HTTP_200_OK)
 
 
-class PasswordResetRequestView(APIView):
+class PasswordResetRequestView(AuditLogMixin, APIView):
     permission_classes = [AllowAny]
+    audit_action = AuditAction.PASSWORD_RESET
 
     def post(self, request: Request) -> Response:
         email = request.data.get("email", "").strip().lower()
@@ -157,12 +160,14 @@ class PasswordResetRequestView(APIView):
             [user.email],
             fail_silently=True,
         )
-        log_audit_event(user, AuditAction.PASSWORD_RESET, request=request)
+        # Keep user-specific logging for this endpoint.
+        log_audit_event(user, self.audit_action, request=request)
         return Response(status=status.HTTP_200_OK)
 
 
-class PasswordResetConfirmView(APIView):
+class PasswordResetConfirmView(AuditLogMixin, APIView):
     permission_classes = [AllowAny]
+    audit_action = AuditAction.PASSWORD_RESET
 
     def post(self, request: Request) -> Response:
         token = request.data.get("token", "")
@@ -186,11 +191,11 @@ class PasswordResetConfirmView(APIView):
         user.status = User.Status.ACTIVE
         user.save(update_fields=["password", "failed_login_count", "status"])
         cache.delete(f"pwd_reset:{token}")
-        log_audit_event(user, AuditAction.PASSWORD_RESET, request=request)
+        log_audit_event(user, self.audit_action, request=request)
         return Response(status=status.HTTP_200_OK)
 
 
-class MFASetupView(APIView):
+class MFASetupView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsAdministrator]
 
     def post(self, request: Request) -> Response:
@@ -202,7 +207,7 @@ class MFASetupView(APIView):
         return Response({"secret": secret, "qr_code_url": provisioning_uri})
 
 
-class MFAConfirmView(APIView):
+class MFAConfirmView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request: Request) -> Response:

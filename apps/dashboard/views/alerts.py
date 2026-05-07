@@ -14,10 +14,11 @@ from apps.dashboard.pagination import AlertPagination
 from apps.dashboard.permissions import IsNGOStaff
 from apps.dashboard.serializers import AlertSerializer
 from apps.dashboard.services.analytics_engine import AnalyticsEngine
+from apps.dashboard.views.mixins import AuditLogMixin
 from apps.feedback.models import Alert
 
 
-class AlertListView(generics.ListAPIView):
+class AlertListView(AuditLogMixin, generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
     serializer_class = AlertSerializer
     pagination_class = AlertPagination
@@ -40,7 +41,7 @@ class AlertListView(generics.ListAPIView):
         return page
 
 
-class AlertAcknowledgeView(APIView):
+class AlertAcknowledgeView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
 
     def post(self, request: Request, alert_id: int) -> Response:
@@ -68,7 +69,7 @@ class AlertAcknowledgeView(APIView):
         return Response(AlertSerializer(alert).data, status=status.HTTP_200_OK)
 
 
-class AlertResolveView(APIView):
+class AlertResolveView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
 
     def post(self, request: Request, alert_id: int) -> Response:
@@ -94,7 +95,7 @@ class AlertResolveView(APIView):
         return Response(AlertSerializer(alert).data, status=status.HTTP_200_OK)
 
 
-class AlertStatsView(APIView):
+class AlertStatsView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
 
     def get(self, request: Request) -> Response:

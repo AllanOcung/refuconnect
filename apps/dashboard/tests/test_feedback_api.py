@@ -1,9 +1,12 @@
 import pytest
+from datetime import timedelta
+
+from django.utils import timezone
 from django.urls import reverse
 
 from apps.common.audit import AuditAction
 from apps.dashboard.models import AuditLog
-from apps.feedback.models import Category, FeedbackCategory
+from apps.feedback.models import Category, Feedback, FeedbackCategory, Sentiment
 
 
 @pytest.mark.django_db
@@ -27,6 +30,80 @@ def test_feedback_responses_do_not_expose_anonymous_user_id(auth_client, sample_
 @pytest.mark.django_db
 def test_filter_by_channel(auth_client, sample_feedback):
     response = auth_client.get(reverse("dashboard:feedback-list"), {"channel": "SMS"})
+    assert response.status_code == 200
+    assert response.data["count"] == 1
+
+
+@pytest.mark.django_db
+def test_filter_by_category(auth_client, sample_feedback):
+    category = Category.objects.create(category_name="Water", is_active=True)
+    FeedbackCategory.objects.create(
+        feedback=sample_feedback,
+        category=category,
+        confidence_score=0.9,
+        is_ai_assigned=True,
+    )
+
+    response = auth_client.get(
+        reverse("dashboard:feedback-list"),
+        {"category": [category.category_id]},
+    )
+    assert response.status_code == 200
+    assert response.data["count"] == 1
+
+
+@pytest.mark.django_db
+def test_filter_by_sentiment(auth_client, sample_feedback):
+    uncertain, _created = Sentiment.objects.get_or_create(
+        sentiment_label="Uncertain",
+        defaults={"display_colour": "#cccccc"},
+    )
+    Feedback.objects.create(
+        anonymous_user_id="anon-uncertain",
+        message_text="No clear signal",
+        message_text_en="No clear signal",
+        channel=Feedback.Channel.SMS,
+        status=Feedback.Status.NEW,
+        urgency_level=Feedback.UrgencyLevel.LOW,
+        language="en",
+        sentiment=uncertain,
+        submitted_at=timezone.now(),
+    )
+
+    response = auth_client.get(reverse("dashboard:feedback-list"), {"sentiment": "Uncertain"})
+    assert response.status_code == 200
+    assert response.data["count"] == 1
+
+
+@pytest.mark.django_db
+def test_filter_by_date_range(auth_client, sample_feedback):
+    sample_feedback.submitted_at = timezone.now() - timedelta(days=10)
+    sample_feedback.save(update_fields=["submitted_at"])
+    Feedback.objects.create(
+        anonymous_user_id="anon-recent",
+        message_text="Recent item",
+        message_text_en="Recent item",
+        channel=Feedback.Channel.SMS,
+        status=Feedback.Status.NEW,
+        urgency_level=Feedback.UrgencyLevel.LOW,
+        language="en",
+        submitted_at=timezone.now(),
+    )
+
+    response = auth_client.get(
+        reverse("dashboard:feedback-list"),
+        {"date_from": (timezone.now() - timedelta(days=1)).isoformat()},
+    )
+    assert response.status_code == 200
+    assert response.data["count"] == 1
+
+
+@pytest.mark.django_db
+def test_filter_by_urgency(auth_client, sample_feedback):
+    sample_feedback.urgency_level = Feedback.UrgencyLevel.HIGH
+    sample_feedback.save(update_fields=["urgency_level"])
+
+    response = auth_client.get(reverse("dashboard:feedback-list"), {"urgency_level": "High"})
     assert response.status_code == 200
     assert response.data["count"] == 1
 

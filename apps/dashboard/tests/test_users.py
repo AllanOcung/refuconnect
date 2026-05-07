@@ -1,4 +1,5 @@
 import pytest
+from django.core import mail
 from django.urls import reverse
 
 from apps.dashboard.models import User
@@ -23,6 +24,22 @@ def test_administrator_can_invite_user(admin_client):
     )
     assert response.status_code == 201
     assert response.data["status"] == User.Status.PENDING_VERIFICATION
+
+
+@pytest.mark.django_db
+def test_invite_sends_email(admin_client):
+    response = admin_client.post(
+        reverse("dashboard:user-invite"),
+        {
+            "full_name": "Invite Email User",
+            "email": "invite-mail@example.test",
+            "role": User.Role.NGO_STAFF,
+        },
+        format="json",
+    )
+    assert response.status_code == 201
+    assert len(mail.outbox) == 1
+    assert "Temporary password" in mail.outbox[0].body
 
 
 @pytest.mark.django_db

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import re
-from datetime import datetime
 
 from django.conf import settings
 from django.template.loader import render_to_string
@@ -61,10 +60,87 @@ class ReportGenerator:
             "filters": filters,
             "analytics": analytics,
             "samples": samples,
+            "sentiment_trend_svg": self._build_sentiment_trend_svg(
+                analytics.get("sentiment_trend", [])
+            ),
         }
         template = f"reports/{template_id}.html"
         html_string = render_to_string(template, context)
         return HTML(string=html_string, base_url=str(settings.BASE_DIR)).write_pdf()
+
+    def _build_sentiment_trend_svg(self, rows: list[dict]) -> str:
+        if not rows:
+            return ""
+
+        chart_rows = rows[-14:]
+        width = 760
+        height = 260
+        margin_left = 45
+        margin_right = 16
+        margin_top = 16
+        margin_bottom = 48
+        plot_width = width - margin_left - margin_right
+        plot_height = height - margin_top - margin_bottom
+        bar_count = max(len(chart_rows), 1)
+        slot_width = plot_width / bar_count
+        bar_width = max(slot_width * 0.62, 8)
+
+        totals = [
+            row.get("Positive", 0)
+            + row.get("Neutral", 0)
+            + row.get("Negative", 0)
+            + row.get("Uncertain", 0)
+            for row in chart_rows
+        ]
+        y_max = max(max(totals), 1)
+
+        palette = {
+            "Positive": "#2A9D8F",
+            "Neutral": "#E9C46A",
+            "Negative": "#E76F51",
+            "Uncertain": "#7B8FA1",
+        }
+
+        parts = [
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+            '<rect width="100%" height="100%" fill="white"/>',
+            f'<line x1="{margin_left}" y1="{margin_top + plot_height}" x2="{margin_left + plot_width}" y2="{margin_top + plot_height}" stroke="#B9C5D1" stroke-width="1"/>',
+        ]
+
+        for index, row in enumerate(chart_rows):
+            x = margin_left + (index * slot_width) + (slot_width - bar_width) / 2
+            y_cursor = margin_top + plot_height
+            for sentiment in ("Positive", "Neutral", "Negative", "Uncertain"):
+                value = int(row.get(sentiment, 0) or 0)
+                if value <= 0:
+                    continue
+                rect_height = (value / y_max) * plot_height
+                y_cursor -= rect_height
+                parts.append(
+                    f'<rect x="{x:.2f}" y="{y_cursor:.2f}" width="{bar_width:.2f}" height="{rect_height:.2f}" fill="{palette[sentiment]}"/>'
+                )
+
+            label = str(row.get("date", ""))[5:10]
+            label_x = x + bar_width / 2
+            parts.append(
+                f'<text x="{label_x:.2f}" y="{height - 20}" font-size="10" text-anchor="middle" fill="#4A5A6A">{label}</text>'
+            )
+
+        legend_x = margin_left
+        legend_y = height - 8
+        legend_offset = 0
+        for sentiment in ("Positive", "Neutral", "Negative", "Uncertain"):
+            color = palette[sentiment]
+            parts.append(
+                f'<rect x="{legend_x + legend_offset}" y="{legend_y - 10}" width="10" height="10" fill="{color}"/>'
+            )
+            parts.append(
+                f'<text x="{legend_x + legend_offset + 14}" y="{legend_y}" font-size="10" fill="#4A5A6A">{sentiment}</text>'
+            )
+            legend_offset += 95
+
+        parts.append("</svg>")
+        return "".join(parts)
 
     def _generate_excel(self, queryset, filters: dict) -> bytes:
         analytics = AnalyticsEngine().get_summary(filters, 1)

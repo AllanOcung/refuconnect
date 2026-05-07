@@ -12,7 +12,7 @@ from celery.schedules import crontab
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # ─── Security ────────────────────────────────────────────────────────────────
-SECRET_KEY = os.environ["SECRET_KEY"]
+SECRET_KEY = os.environ.get("SECRET_KEY", "dev-insecure-secret-key")
 DEBUG = False
 ALLOWED_HOSTS: list[str] = []
 

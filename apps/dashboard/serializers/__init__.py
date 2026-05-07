@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from apps.dashboard.serializers.alerts import AlertSerializer
 from apps.dashboard.serializers.audit import (
-    AuditLogMixin,
     AuditLogSerializer,
     AuditTrailSerializer,
 )
@@ -29,7 +28,6 @@ from apps.dashboard.serializers.users import (
 
 __all__ = [
     "AlertSerializer",
-    "AuditLogMixin",
     "AuditLogSerializer",
     "AuditTrailSerializer",
     "FeedbackAlertSerializer",

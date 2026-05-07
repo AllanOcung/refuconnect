@@ -24,6 +24,13 @@
   {% endfor %}
 </table>
 
+<h2>Sentiment Over Time</h2>
+{% if sentiment_trend_svg %}
+<div>{{ sentiment_trend_svg|safe }}</div>
+{% else %}
+<div>No trend data available.</div>
+{% endif %}
+
 <h2>Representative Feedback Samples</h2>
 <table>
   <tr><th>Reference ID</th><th>Submitted</th><th>Channel</th><th>Message</th></tr>

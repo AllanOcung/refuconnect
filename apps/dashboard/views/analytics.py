@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 
 from apps.dashboard.permissions import IsNGOStaff
 from apps.dashboard.services.analytics_engine import AnalyticsEngine
+from apps.dashboard.views.mixins import AuditLogMixin
 
 
 def _filters_from_request(request: Request) -> dict:
@@ -25,7 +26,7 @@ def _org_id(request: Request):
     return getattr(request.user, "organisation", "") or 1
 
 
-class AnalyticsSummaryView(APIView):
+class AnalyticsSummaryView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
 
     def get(self, request: Request) -> Response:
@@ -33,7 +34,7 @@ class AnalyticsSummaryView(APIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
-class SentimentTrendView(APIView):
+class SentimentTrendView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
 
     def get(self, request: Request) -> Response:
@@ -55,7 +56,7 @@ class SentimentTrendView(APIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
-class ThemeSummaryView(APIView):
+class ThemeSummaryView(AuditLogMixin, APIView):
     permission_classes = [IsAuthenticated, IsNGOStaff]
 
     def get(self, request: Request) -> Response:

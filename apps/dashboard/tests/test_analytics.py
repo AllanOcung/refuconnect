@@ -1,8 +1,10 @@
 import pytest
+from django.utils import timezone
 from django.core.cache import cache
 from django.urls import reverse
 
 from apps.dashboard.services.analytics_engine import AnalyticsEngine
+from apps.feedback.models import Feedback
 
 
 @pytest.mark.django_db
@@ -60,3 +62,41 @@ def test_sentiment_trend_returns_correct_number_of_days(auth_client, sample_feed
     response = auth_client.get(reverse("dashboard:analytics-sentiment-trend"), {"days": 7})
     assert response.status_code == 200
     assert len(response.data) == 7
+
+
+@pytest.mark.django_db
+def test_volume_counts_correct(sample_feedback):
+    Feedback.objects.create(
+        anonymous_user_id="anon-volume",
+        message_text="Volume sample",
+        message_text_en="Volume sample",
+        channel=Feedback.Channel.SMS,
+        status=Feedback.Status.NEW,
+        urgency_level=Feedback.UrgencyLevel.LOW,
+        language="en",
+        submitted_at=timezone.now(),
+    )
+
+    cache.clear()
+    data = AnalyticsEngine().get_summary({}, 1)
+    assert data["volume"]["today"] >= 2
+    assert data["volume"]["total"] >= 2
+
+
+@pytest.mark.django_db
+def test_channel_distribution_correct(sample_feedback):
+    Feedback.objects.create(
+        anonymous_user_id="anon-ussd",
+        message_text="USSD sample",
+        message_text_en="USSD sample",
+        channel=Feedback.Channel.USSD,
+        status=Feedback.Status.NEW,
+        urgency_level=Feedback.UrgencyLevel.LOW,
+        language="en",
+        submitted_at=timezone.now(),
+    )
+
+    cache.clear()
+    data = AnalyticsEngine().get_summary({}, 1)
+    assert data["channel_distribution"]["SMS"]["count"] >= 1
+    assert data["channel_distribution"]["USSD"]["count"] >= 1

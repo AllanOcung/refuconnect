@@ -1,8 +1,27 @@
 import pytest
+from datetime import timedelta
+
+from django.utils import timezone
 from django.urls import reverse
 
 from apps.common.audit import AuditAction
 from apps.dashboard.models import AuditLog, ReportExport
+from apps.feedback.models import Feedback, Sentiment
+
+
+@pytest.mark.django_db
+def test_pdf_report_returns_pdf_content_type(auth_client, sample_feedback, monkeypatch):
+    monkeypatch.setattr(
+        "apps.dashboard.services.report_generator.ReportGenerator._generate_pdf",
+        lambda self, queryset, filters, template_id, user: b"%PDF-1.4 test",
+    )
+    response = auth_client.post(
+        reverse("dashboard:reports-generate"),
+        {"format": "pdf", "template_id": "executive_summary", "filters": {}},
+        format="json",
+    )
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("application/pdf")
 
 
 @pytest.mark.django_db
@@ -26,6 +45,58 @@ def test_report_generation_logs_audit_event(auth_client, sample_feedback):
         format="json",
     )
     assert AuditLog.objects.filter(action=AuditAction.REPORT_EXPORTED).exists()
+
+
+@pytest.mark.django_db
+def test_report_respects_date_filters(auth_client, monkeypatch):
+    sentiment, _created = Sentiment.objects.get_or_create(
+        sentiment_label="Neutral",
+        defaults={"display_colour": "#aaaaaa"},
+    )
+    Feedback.objects.create(
+        anonymous_user_id="anon-old",
+        message_text="Older feedback",
+        message_text_en="Older feedback",
+        channel=Feedback.Channel.SMS,
+        status=Feedback.Status.NEW,
+        urgency_level=Feedback.UrgencyLevel.LOW,
+        language="en",
+        sentiment=sentiment,
+        submitted_at=timezone.now() - timedelta(days=12),
+    )
+    Feedback.objects.create(
+        anonymous_user_id="anon-new",
+        message_text="Recent feedback",
+        message_text_en="Recent feedback",
+        channel=Feedback.Channel.SMS,
+        status=Feedback.Status.NEW,
+        urgency_level=Feedback.UrgencyLevel.LOW,
+        language="en",
+        sentiment=sentiment,
+        submitted_at=timezone.now(),
+    )
+
+    monkeypatch.setattr(
+        "apps.dashboard.services.report_generator.ReportGenerator._generate_excel",
+        lambda self, queryset, filters: b"xlsx-content",
+    )
+
+    response = auth_client.post(
+        reverse("dashboard:reports-generate"),
+        {
+            "format": "xlsx",
+            "template_id": "executive_summary",
+            "filters": {
+                "date_to": (timezone.now() - timedelta(days=7)).isoformat(),
+            },
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+    export_id = int(response["X-Report-Export-ID"])
+    export = ReportExport.objects.get(export_id=export_id)
+    assert export.row_count == 1
 
 
 @pytest.mark.django_db
