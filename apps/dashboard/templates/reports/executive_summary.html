@@ -1,0 +1,39 @@
+{% extends "reports/base_report.html" %}
+{% block content %}
+<h2>Executive Summary</h2>
+<div class="metrics">
+  <div class="metric"><strong>{{ analytics.volume.total }}</strong>Total</div>
+  <div class="metric"><strong>{{ analytics.volume.this_week }}</strong>This week</div>
+  <div class="metric"><strong>{{ analytics.urgent_open_count }}</strong>Urgent open</div>
+  <div class="metric"><strong>{{ analytics.unprocessed_count }}</strong>Unprocessed</div>
+</div>
+
+<h2>Sentiment Breakdown</h2>
+<table>
+  <tr><th>Sentiment</th><th>Count</th><th>Percentage</th></tr>
+  {% for label, row in analytics.sentiment_distribution.items %}
+  <tr><td>{{ label }}</td><td>{{ row.count }}</td><td>{{ row.percentage }}%</td></tr>
+  {% endfor %}
+</table>
+
+<h2>Top Categories</h2>
+<table>
+  <tr><th>Category</th><th>Count</th><th>Percentage</th></tr>
+  {% for row in analytics.top_categories|slice:":3" %}
+  <tr><td>{{ row.category_name }}</td><td>{{ row.count }}</td><td>{{ row.percentage }}%</td></tr>
+  {% endfor %}
+</table>
+
+<h2>Representative Feedback Samples</h2>
+<table>
+  <tr><th>Reference ID</th><th>Submitted</th><th>Channel</th><th>Message</th></tr>
+  {% for sample in samples %}
+  <tr>
+    <td>{{ sample.feedback_id }}</td>
+    <td>{{ sample.submitted_at|date:"Y-m-d H:i" }}</td>
+    <td>{{ sample.channel }}</td>
+    <td>{{ sample.message }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
