@@ -1,0 +1,94 @@
+{% extends "reports/base_report.html" %}
+{% block content %}
+<h2>Detailed Analysis</h2>
+<div class="meta">
+	Date range:
+	{% if filters.date_from %}{{ filters.date_from }}{% else %}Start{% endif %}
+	to
+	{% if filters.date_to %}{{ filters.date_to }}{% else %}Now{% endif %}
+</div>
+
+<h2>Executive Metrics</h2>
+<table>
+	<tr><th>Metric</th><th>Value</th></tr>
+	<tr><td>Total feedback</td><td>{{ analytics.volume.total }}</td></tr>
+	<tr><td>Today</td><td>{{ analytics.volume.today }}</td></tr>
+	<tr><td>This week</td><td>{{ analytics.volume.this_week }}</td></tr>
+	<tr><td>This month</td><td>{{ analytics.volume.this_month }}</td></tr>
+	<tr><td>Urgent open alerts</td><td>{{ analytics.urgent_open_count }}</td></tr>
+	<tr><td>Unprocessed feedback</td><td>{{ analytics.unprocessed_count }}</td></tr>
+</table>
+
+<h2>Sentiment Distribution</h2>
+<table>
+	<tr><th>Sentiment</th><th>Count</th><th>Percentage</th></tr>
+	{% for label, row in analytics.sentiment_distribution.items %}
+	<tr><td>{{ label }}</td><td>{{ row.count }}</td><td>{{ row.percentage }}%</td></tr>
+	{% endfor %}
+</table>
+
+<h2>Channel Distribution</h2>
+<table>
+	<tr><th>Channel</th><th>Count</th><th>Percentage</th></tr>
+	{% for label, row in analytics.channel_distribution.items %}
+	<tr><td>{{ label }}</td><td>{{ row.count }}</td><td>{{ row.percentage }}%</td></tr>
+	{% endfor %}
+</table>
+
+<h2>Top Categories</h2>
+<table>
+	<tr><th>Category</th><th>Count</th><th>Percentage</th></tr>
+	{% for row in analytics.top_categories %}
+	<tr><td>{{ row.category_name }}</td><td>{{ row.count }}</td><td>{{ row.percentage }}%</td></tr>
+	{% endfor %}
+</table>
+
+<h2>Sentiment Over Time (Daily Counts)</h2>
+<table>
+	<tr><th>Date</th><th>Positive</th><th>Neutral</th><th>Negative</th><th>Uncertain</th></tr>
+	{% for row in analytics.sentiment_trend %}
+	<tr>
+		<td>{{ row.date }}</td>
+		<td>{{ row.Positive }}</td>
+		<td>{{ row.Neutral }}</td>
+		<td>{{ row.Negative }}</td>
+		<td>{{ row.Uncertain }}</td>
+	</tr>
+	{% endfor %}
+</table>
+
+<h2>Geographic Distribution</h2>
+<table>
+	<tr><th>Settlement</th><th>Count</th></tr>
+	{% for row in analytics.geographic_distribution %}
+	<tr><td>{{ row.settlement }}</td><td>{{ row.count }}</td></tr>
+	{% endfor %}
+</table>
+
+<h2>Top Themes This Week</h2>
+<table>
+	<tr><th>Cluster</th><th>Feedback Count</th><th>Average Sentiment</th><th>Keywords</th><th>Week Start</th></tr>
+	{% for row in analytics.theme_summary %}
+	<tr>
+		<td>{{ row.cluster_label }}</td>
+		<td>{{ row.feedback_count }}</td>
+		<td>{{ row.avg_sentiment }}</td>
+		<td>{{ row.top_keywords|join:", " }}</td>
+		<td>{{ row.week_start_date }}</td>
+	</tr>
+	{% endfor %}
+</table>
+
+<h2>Representative Feedback Samples (Anonymised)</h2>
+<table>
+	<tr><th>Reference ID</th><th>Submitted</th><th>Channel</th><th>Message</th></tr>
+	{% for sample in samples %}
+	<tr>
+		<td>{{ sample.feedback_id }}</td>
+		<td>{{ sample.submitted_at|date:"Y-m-d H:i" }}</td>
+		<td>{{ sample.channel }}</td>
+		<td>{{ sample.message }}</td>
+	</tr>
+	{% endfor %}
+</table>
+{% endblock %}

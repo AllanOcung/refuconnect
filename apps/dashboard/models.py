@@ -94,6 +94,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     failed_login_count = models.SmallIntegerField(default=0)
     last_login_at = models.DateTimeField(null=True, blank=True)
     preferred_language = models.CharField(max_length=10, default="en")
+    organisation = models.CharField(max_length=150, blank=True, default="")
     receive_alerts = models.BooleanField(default=True)
     alert_phone = models.CharField(max_length=20, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -210,3 +211,82 @@ class AuditLog(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValueError("AuditLog entries are immutable and cannot be deleted.")
+
+
+class ScheduledReport(models.Model):
+    """Configuration for recurring dashboard report emails."""
+
+    class Format(models.TextChoices):
+        PDF = "pdf", "PDF"
+        XLSX = "xlsx", "Excel"
+
+    class Frequency(models.TextChoices):
+        DAILY = "daily", "Daily"
+        WEEKLY = "weekly", "Weekly"
+        MONTHLY = "monthly", "Monthly"
+
+    report_id = models.AutoField(primary_key=True)
+    user = models.ForeignKey(
+        "dashboard.User",
+        on_delete=models.CASCADE,
+        related_name="scheduled_reports",
+    )
+    template_id = models.CharField(max_length=50)
+    format = models.CharField(max_length=10, choices=Format.choices)
+    filters = models.JSONField(default=dict)
+    frequency = models.CharField(max_length=20, choices=Frequency.choices)
+    next_run_at = models.DateTimeField(db_index=True)
+    last_sent_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "rc_scheduled_report"
+        ordering = ["next_run_at"]
+
+    def __str__(self) -> str:
+        return f"{self.template_id} {self.format} for {self.user}"
+
+
+class ReportExport(models.Model):
+    """Audit-friendly metadata for generated dashboard reports."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        PROCESSING = "processing", "Processing"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    export_id = models.AutoField(primary_key=True)
+    user = models.ForeignKey(
+        "dashboard.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="report_exports",
+    )
+    template_id = models.CharField(max_length=50)
+    format = models.CharField(max_length=10)
+    filters_snapshot = models.JSONField(default=dict)
+    row_count = models.IntegerField(default=0)
+    file_size_bytes = models.IntegerField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.COMPLETED,
+        db_index=True,
+    )
+    task_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    file_name = models.CharField(max_length=255, null=True, blank=True)
+    content_type = models.CharField(max_length=120, null=True, blank=True)
+    file_data = models.BinaryField(null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+    generated_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "rc_report_export"
+        ordering = ["-generated_at"]
+
+    def __str__(self) -> str:
+        return f"{self.format} report #{self.export_id}"

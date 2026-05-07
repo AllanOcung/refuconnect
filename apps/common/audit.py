@@ -38,6 +38,7 @@ class AuditAction:
     RESPONSE_SENT = "RESPONSE_SENT"
     BROADCAST_CREATED = "BROADCAST_CREATED"
     ALERT_ACKNOWLEDGED = "ALERT_ACKNOWLEDGED"
+    ALERT_RESOLVED = "ALERT_RESOLVED"
 
 
 def _get_client_ip(request: "HttpRequest") -> Optional[str]:

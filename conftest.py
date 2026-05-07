@@ -62,12 +62,12 @@ class FeedbackFactory(DjangoModelFactory):
         model = "feedback.Feedback"
 
     anonymous_user_id = factory.Faker("uuid4")
-    message_original = factory.Faker("paragraph")
-    message_normalised = factory.LazyAttribute(lambda obj: obj.message_original)
+    message_text = factory.Faker("paragraph")
+    message_text_en = factory.LazyAttribute(lambda obj: obj.message_text)
     channel = "SMS"
-    status = "Pending"
+    status = "New"
     urgency_level = "Low"
-    detected_language = "en"
+    language = "en"
     submitted_at = factory.LazyFunction(timezone.now)
 
 
@@ -86,7 +86,8 @@ class FeedbackMediaFactory(DjangoModelFactory):
 
     feedback = factory.SubFactory(FeedbackFactory)
     media_type = "image"
-    file_url = factory.Faker("url")
+    storage_path = factory.Faker("file_path")
+    file_size_bytes = 1024
 
 
 class AlertFactory(DjangoModelFactory):
@@ -94,9 +95,9 @@ class AlertFactory(DjangoModelFactory):
         model = "feedback.Alert"
 
     feedback = factory.SubFactory(FeedbackFactory)
-    priority = "High"
-    alert_status = "Open"
-    alert_message = factory.Faker("sentence")
+    priority_level = "High"
+    status = "Open"
+    description = factory.Faker("sentence")
 
 
 class AIModelLogFactory(DjangoModelFactory):
@@ -105,9 +106,10 @@ class AIModelLogFactory(DjangoModelFactory):
 
     model_type = "sentiment"
     model_version = "v1.0.0"
-    training_data_size = 1000
-    accuracy_score = 0.90
-    trained_by = factory.SubFactory(UserFactory)
+    training_data_summary = "1000 records"
+    accuracy_english = 90.0
+    trained_by = "test-suite"
+    trained_at = factory.LazyFunction(timezone.now)
 
 
 class ThemeClusterFactory(DjangoModelFactory):
@@ -128,7 +130,7 @@ class UserConsentFactory(DjangoModelFactory):
     phone_number_encrypted = "dGVzdA=="  # placeholder encrypted value
     consent_type = "follow_up"
     channel_preference = "SMS"
-    language_preference = "en"
+    consent_given_at = factory.LazyFunction(timezone.now)
     is_active = True
 
 
@@ -136,11 +138,13 @@ class NotificationFactory(DjangoModelFactory):
     class Meta:
         model = "notifications.Notification"
 
-    user_consent = factory.SubFactory(UserConsentFactory)
+    feedback = factory.SubFactory(FeedbackFactory)
     message_type = "Acknowledgement"
-    message_body = factory.Faker("sentence")
+    content = factory.Faker("sentence")
+    delivery_language = "en"
+    channel = "SMS"
     delivery_status = "Queued"
-    sent_by = factory.SubFactory(UserFactory)
+    sent_by_user = factory.SubFactory(UserFactory)
 
 
 # -------------------------------------------------------------------------
