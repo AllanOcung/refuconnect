@@ -81,6 +81,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      disable: true
 
   celery_beat:
     image: *django-image
@@ -94,6 +96,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      disable: true
 
   afrolid:
     build:
