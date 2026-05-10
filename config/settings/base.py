@@ -189,6 +189,20 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=7, minute=0),
         "options": {"expires": 60 * 60},
     },
+
+    #added to these periodic tasks ''''aijuka
+    "check-scheduled-broadcasts": {
+        "task": "apps.notifications.tasks.check_scheduled_broadcasts",
+        "schedule": crontab(minute="*"),
+    },
+    "retry-failed-notifications": {
+        "task": "apps.notifications.tasks.retry_failed_notifications",
+        "schedule": crontab(minute="*/30"),
+    },
+    "cleanup-expired-consents": {
+        "task": "apps.notifications.tasks.cleanup_expired_consents",
+        "schedule": crontab(hour=1, minute=0),
+    },
 }
 
 # ─── Encryption ──────────────────────────────────────────────────────────────
@@ -204,6 +218,12 @@ WHATSAPP_ACCESS_TOKEN = os.environ.get("WHATSAPP_ACCESS_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
 WHATSAPP_VERIFY_TOKEN = os.environ.get("WHATSAPP_VERIFY_TOKEN", "")
 WHATSAPP_APP_SECRET = os.environ.get("WHATSAPP_APP_SECRET", "")
+##**********additional feedback subsystem API keys**********
+DASHBOARD_URL = os.environ.get("DASHBOARD_URL", "http://localhost:3000")
+BROADCAST_BATCH_SIZE = int(os.environ.get("BROADCAST_BATCH_SIZE", "100"))
+BROADCAST_BATCH_DELAY_SECONDS = int(os.environ.get("BROADCAST_BATCH_DELAY_SECONDS", "2"))
+NOTIFICATION_MAX_RETRIES = int(os.environ.get("NOTIFICATION_MAX_RETRIES", "3"))
+CONSENT_RETENTION_DAYS = int(os.environ.get("CONSENT_RETENTION_DAYS", "30"))
 
 # ─── Phone anonymisation ──────────────────────────────────────────────────────
 # Salt used when hashing phone numbers to produce anonymous_user_id values.
