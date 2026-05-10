@@ -25,10 +25,20 @@ app.conf.beat_schedule = {
         "task": "apps.nlp.tasks.run_model_retraining",
         "schedule": crontab(hour=3, minute=0, day_of_month=1),
     },
-    # Retry failed notifications every 15 minutes
+    # Check for scheduled broadcasts every minute
+    "check-scheduled-broadcasts": {
+        "task": "apps.notifications.tasks.check_scheduled_broadcasts",
+        "schedule": crontab(minute="*"),
+    },
+    # Retry failed notifications every 30 minutes
     "retry-failed-notifications": {
         "task": "apps.notifications.tasks.retry_failed_notifications",
-        "schedule": crontab(minute="*/15"),
+        "schedule": crontab(minute="*/30"),
+    },
+    # Cleanup expired consents daily at 01:00 UTC
+    "cleanup-expired-consents": {
+        "task": "apps.notifications.tasks.cleanup_expired_consents",
+        "schedule": crontab(hour=1, minute=0),
     },
     # Archive old processed feedback daily at 03:00 UTC
     "archive-old-feedback": {

@@ -54,7 +54,7 @@ WHATSAPP_PHONE_NUMBER_ID = "TEST_PHONE_ID"
 
 PHONE_HASH_SALT = "test-phone-hash-salt"
 
-ENCRYPTION_KEY = "dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcy1sb25n"  # base64, 32 bytes
+ENCRYPTION_KEY = "PsS_XMgKmQW2aQ-oT1yragpnzvPlkopvGWadmsx1F0M="  # base64url, decodes to 32 bytes
 
 # ─── Media / static files ─────────────────────────────────────────────────────
 import tempfile  # noqa: E402
@@ -76,3 +76,6 @@ LOGGING = {
 # ─── Throttling — disable for tests ──────────────────────────────────────────
 REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = []   # noqa: F405
 REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {}     # noqa: F405
+
+ENCRYPTION_KEY = 'PsS_XMgKmQW2aQ-oT1yragpnzvPlkopvGWadmsx1F0M='
+DASHBOARD_URL = 'http://localhost:3000'

@@ -297,3 +297,5 @@ LOGGING = {
         },
     },
 }
+
+DASHBOARD_URL = os.environ.get('DASHBOARD_URL', 'http://localhost:3000')
