@@ -22,7 +22,12 @@ from apps.dashboard.views.auth import (
     PasswordResetConfirmView,
     PasswordResetRequestView,
 )
-from apps.dashboard.views.feedback import AuditLogView, FeedbackDetailView, FeedbackListView
+from apps.dashboard.views.feedback import (
+    AuditLogView,
+    CategoryListView,
+    FeedbackDetailView,
+    FeedbackListView,
+)
 from apps.dashboard.views.reports import (
     ReportGenerateView,
     ReportHistoryView,
@@ -55,6 +60,7 @@ urlpatterns = [
     path("auth/mfa/setup/", MFASetupView.as_view(), name="mfa-setup"),
     path("auth/mfa/confirm/", MFAConfirmView.as_view(), name="mfa-confirm"),
     path("feedback/", FeedbackListView.as_view(), name="feedback-list"),
+    path("feedback/categories/", CategoryListView.as_view(), name="feedback-categories"),
     path("feedback/<int:feedback_id>/", FeedbackDetailView.as_view(), name="feedback-detail"),
     path("audit-log/", AuditLogView.as_view(), name="audit-log"),
     path("analytics/summary/", AnalyticsSummaryView.as_view(), name="analytics-summary"),
