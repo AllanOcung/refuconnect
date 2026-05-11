@@ -9,6 +9,7 @@ from rest_framework.filters import OrderingFilter
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.common.audit import AuditAction, log_audit_event
 from apps.dashboard.filters import AuditLogFilterSet, FeedbackFilterSet
@@ -23,7 +24,7 @@ from apps.dashboard.serializers import (
 )
 from apps.dashboard.services.analytics_engine import AnalyticsEngine
 from apps.dashboard.views.mixins import AuditLogMixin
-from apps.feedback.models import Feedback, FeedbackCategory, FeedbackMedia
+from apps.feedback.models import Category, Feedback, FeedbackCategory, FeedbackMedia
 
 
 class FeedbackListView(AuditLogMixin, generics.ListAPIView):
@@ -157,3 +158,15 @@ class AuditLogView(AuditLogMixin, generics.ListAPIView):
 
     def get_queryset(self):
         return AuditLog.objects.select_related("user", "feedback").order_by("-created_at")
+
+
+class CategoryListView(AuditLogMixin, APIView):
+    permission_classes = [IsAuthenticated, IsNGOStaff]
+
+    def get(self, request: Request) -> Response:
+        categories = list(
+            Category.objects.filter(is_active=True)
+            .order_by("category_name")
+            .values("category_id", "category_name", "description")
+        )
+        return Response(categories, status=status.HTTP_200_OK)
