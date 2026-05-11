@@ -1,3 +1,11 @@
+import os
+from pathlib import Path
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent.parent / '.env')
+except ImportError:
+    pass
+
 """Development settings — DEBUG on, relaxed security, console email."""
 import os
 
@@ -42,3 +50,4 @@ REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {  # noqa: F405
 
 # ─── Show full errors ────────────────────────────────────────────────────────
 LOGGING["root"]["level"] = "DEBUG"  # noqa: F405
+
