@@ -73,7 +73,10 @@ class FeedbackFilterSet(django_filters.FilterSet):
 
 
 class AuditLogFilterSet(django_filters.FilterSet):
+    # user_id = actor (who performed the action). target_user = subject (who it
+    # was performed on). Names are intentionally distinct to avoid confusion.
     user_id = django_filters.NumberFilter(field_name="user_id")
+    target_user = django_filters.NumberFilter(field_name="target_user_id")
     feedback_id = django_filters.NumberFilter(field_name="feedback_id")
     action = django_filters.CharFilter(field_name="action")
     date_from = django_filters.DateTimeFilter(field_name="created_at", lookup_expr="gte")
@@ -81,4 +84,11 @@ class AuditLogFilterSet(django_filters.FilterSet):
 
     class Meta:
         model = AuditLog
-        fields = ["user_id", "feedback_id", "action", "date_from", "date_to"]
+        fields = [
+            "user_id",
+            "target_user",
+            "feedback_id",
+            "action",
+            "date_from",
+            "date_to",
+        ]

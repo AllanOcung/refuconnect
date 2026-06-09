@@ -1,0 +1,9 @@
+Hi {{ user_name }},
+
+For your security, your RefuConnect account has been temporarily locked after several failed sign-in attempts.
+
+If this was you, please contact your administrator{% if support_email %} or email {{ support_email }}{% endif %} to unlock your account.
+
+If this wasn't you, your administrator should be alerted — someone may be trying to access your account.
+
+— RefuConnect

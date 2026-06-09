@@ -39,6 +39,17 @@ class AuditAction:
     BROADCAST_CREATED = "BROADCAST_CREATED"
     ALERT_ACKNOWLEDGED = "ALERT_ACKNOWLEDGED"
     ALERT_RESOLVED = "ALERT_RESOLVED"
+    # User-management & security (Tier-2 polish)
+    PROFILE_UPDATED = "PROFILE_UPDATED"
+    PASSWORD_CHANGED = "PASSWORD_CHANGED"
+    MFA_ENABLED = "MFA_ENABLED"
+    MFA_DISABLED = "MFA_DISABLED"
+    MFA_BACKUP_CODES_GENERATED = "MFA_BACKUP_CODES_GENERATED"
+    BACKUP_CODE_USED = "BACKUP_CODE_USED"
+    SESSIONS_REVOKED = "SESSIONS_REVOKED"
+    INVITE_RESENT = "INVITE_RESENT"
+    INVITE_REVOKED = "INVITE_REVOKED"
+    BULK_INVITE_CREATED = "BULK_INVITE_CREATED"
 
 
 def _get_client_ip(request: "HttpRequest") -> Optional[str]:
@@ -58,6 +69,7 @@ def log_audit_event(
     old_value: Optional[str] = None,
     new_value: Optional[str] = None,
     request: Optional["HttpRequest"] = None,
+    target_user: Optional["User"] = None,
 ) -> None:
     """
     Write a single row to the AuditLog table.
@@ -79,6 +91,9 @@ def log_audit_event(
     request:
         The Django ``HttpRequest``.  When supplied, IP address and user-agent
         are extracted automatically.
+    target_user:
+        The user this event was performed *on* (the subject), if different from
+        ``user`` (the actor). Used to power per-user activity timelines.
     """
     # Deferred import to avoid circular import at module load time
     from apps.dashboard.models import AuditLog  # noqa: PLC0415
@@ -95,6 +110,7 @@ def log_audit_event(
     try:
         AuditLog.objects.create(
             user=user,
+            target_user=target_user,
             feedback=feedback,
             action=action[:60],
             field_changed=field_changed[:60] if field_changed else None,

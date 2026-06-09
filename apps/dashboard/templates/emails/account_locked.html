@@ -1,0 +1,21 @@
+{% extends "emails/base.html" %}
+{% block title %}RefuConnect — account locked{% endblock %}
+{% block body %}
+  <h1 style="margin:0 0 16px; font-size:22px; line-height:1.3; color:#b91c1c;">Your account has been locked</h1>
+
+  <p style="margin:0 0 12px; font-size:15px; line-height:1.55;">
+    Hi {{ user_name }},
+  </p>
+
+  <p style="margin:0 0 12px; font-size:15px; line-height:1.55;">
+    For your security, we've temporarily locked your RefuConnect account after several failed sign-in attempts.
+  </p>
+
+  <p style="margin:0 0 12px; font-size:15px; line-height:1.55;">
+    If this was you, please contact your administrator{% if support_email %} or email <a href="mailto:{{ support_email }}" style="color:#0f766e;">{{ support_email }}</a>{% endif %} to unlock your account.
+  </p>
+
+  <p style="margin:0; font-size:15px; line-height:1.55;">
+    If this wasn't you, your administrator should be alerted — someone may be trying to access your account.
+  </p>
+{% endblock %}

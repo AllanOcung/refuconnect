@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}RefuConnect{% endblock %}</title>
+  </head>
+  <body style="margin:0; padding:0; background-color:#f4f5f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:#1f2937;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f4f5f7;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px; width:100%; background-color:#ffffff; border-radius:12px; overflow:hidden; border:1px solid #e5e7eb;">
+            <!-- Header -->
+            <tr>
+              <td style="background-color:#0f766e; padding:24px 32px; color:#ffffff;">
+                <div style="font-size:20px; font-weight:700; letter-spacing:-0.01em;">RefuConnect</div>
+                <div style="font-size:13px; opacity:0.85; margin-top:2px;">Humanitarian Feedback Platform</div>
+              </td>
+            </tr>
+
+            <!-- Body -->
+            <tr>
+              <td style="padding:32px;">
+                {% block body %}{% endblock %}
+              </td>
+            </tr>
+
+            <!-- Footer -->
+            <tr>
+              <td style="background-color:#f9fafb; padding:20px 32px; border-top:1px solid #e5e7eb; font-size:12px; color:#6b7280;">
+                This message was sent by RefuConnect. If you weren't expecting it you can safely ignore it.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

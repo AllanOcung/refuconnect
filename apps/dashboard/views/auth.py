@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import re
 import secrets
 
 import pyotp
 from django.core.cache import cache
-from django.core.mail import send_mail
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -17,8 +15,17 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.common.audit import AuditAction, log_audit_event
 from apps.common.encryption import decrypt_field, encrypt_field
+from apps.common.passwords import PASSWORD_POLICY_DETAIL, is_password_valid
 from apps.dashboard.models import User
 from apps.dashboard.permissions import IsAdministrator
+from apps.dashboard.services.backup_codes import (
+    consume_backup_code,
+    generate_backup_codes,
+)
+from apps.dashboard.services.emails import (
+    send_account_locked_email,
+    send_password_reset_email,
+)
 from apps.dashboard.views.mixins import AuditLogMixin
 
 _MAX_FAILED_ATTEMPTS = 5
@@ -31,12 +38,7 @@ def _mfa_secret_for_use(stored_secret: str) -> str:
         return stored_secret
 
 
-def _password_is_valid(password: str) -> bool:
-    return (
-        len(password) >= 8
-        and re.search(r"\d", password) is not None
-        and re.search(r"[^A-Za-z0-9]", password) is not None
-    )
+# Password policy moved to apps.common.passwords for shared use.
 
 
 class LoginView(AuditLogMixin, APIView):
@@ -75,25 +77,36 @@ class LoginView(AuditLogMixin, APIView):
             user.increment_failed_login(lock_threshold=_MAX_FAILED_ATTEMPTS)
             log_audit_event(user, AuditAction.LOGIN_FAILED, request=request)
             if user.status == User.Status.LOCKED:
-                log_audit_event(user, AuditAction.ACCOUNT_LOCKED, request=request)
-                send_mail(
-                    "RefuConnect account locked",
-                    "Your RefuConnect account has been locked after failed login attempts.",
-                    None,
-                    [user.email],
-                    fail_silently=True,
+                log_audit_event(
+                    user,
+                    AuditAction.ACCOUNT_LOCKED,
+                    target_user=user,
+                    request=request,
                 )
+                send_account_locked_email(user)
             return Response(
                 {"detail": "Invalid credentials"},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        if user.role == User.Role.ADMINISTRATOR and user.mfa_secret:
+        if user.mfa_secret:
             totp_code = request.data.get("totp_code")
-            if not totp_code:
+            backup_code = request.data.get("backup_code")
+            if not totp_code and not backup_code:
                 return Response({"mfa_required": True}, status=status.HTTP_200_OK)
             secret = _mfa_secret_for_use(user.mfa_secret)
-            if not pyotp.TOTP(secret).verify(str(totp_code)):
+            mfa_ok = False
+            if totp_code and pyotp.TOTP(secret).verify(str(totp_code)):
+                mfa_ok = True
+            elif backup_code and consume_backup_code(user, str(backup_code)):
+                mfa_ok = True
+                log_audit_event(
+                    user,
+                    AuditAction.BACKUP_CODE_USED,
+                    target_user=user,
+                    request=request,
+                )
+            if not mfa_ok:
                 return Response(
                     {"detail": "Invalid MFA code."},
                     status=status.HTTP_401_UNAUTHORIZED,
@@ -153,15 +166,14 @@ class PasswordResetRequestView(AuditLogMixin, APIView):
 
         token = secrets.token_urlsafe(32)
         cache.set(f"pwd_reset:{token}", user.user_id, timeout=3600)
-        send_mail(
-            "RefuConnect password reset",
-            f"Use this token to reset your password: {token}",
-            None,
-            [user.email],
-            fail_silently=True,
-        )
+        send_password_reset_email(user, token)
         # Keep user-specific logging for this endpoint.
-        log_audit_event(user, self.audit_action, request=request)
+        log_audit_event(
+            user,
+            self.audit_action,
+            target_user=user,
+            request=request,
+        )
         return Response(status=status.HTTP_200_OK)
 
 
@@ -178,25 +190,90 @@ class PasswordResetConfirmView(AuditLogMixin, APIView):
                 {"detail": "Password reset token is invalid or expired."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not _password_is_valid(new_password):
+        if not is_password_valid(new_password):
             return Response(
-                {
-                    "detail": "Password must be at least 8 characters and include a number and special character."
-                },
+                {"detail": PASSWORD_POLICY_DETAIL},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         user = User.objects.get(pk=user_id)
         user.set_password(new_password)
         user.failed_login_count = 0
         user.status = User.Status.ACTIVE
-        user.save(update_fields=["password", "failed_login_count", "status"])
+        user.password_changed_at = timezone.now()
+        user.save(update_fields=["password", "failed_login_count", "status", "password_changed_at"])
         cache.delete(f"pwd_reset:{token}")
-        log_audit_event(user, self.audit_action, request=request)
+        log_audit_event(
+            user,
+            self.audit_action,
+            target_user=user,
+            request=request,
+        )
         return Response(status=status.HTTP_200_OK)
 
 
+class AcceptInviteView(AuditLogMixin, APIView):
+    permission_classes = [AllowAny]
+    audit_action = AuditAction.USER_MODIFIED
+
+    def get(self, request: Request) -> Response:
+        """Validate a token without consuming it, so the frontend can show the email."""
+        token = request.query_params.get("token", "")
+        user_id = cache.get(f"invite:{token}") if token else None
+        if not user_id:
+            return Response(
+                {"detail": "Invitation link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "Invitation link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"email": user.email, "full_name": user.full_name})
+
+    def post(self, request: Request) -> Response:
+        token = request.data.get("token", "")
+        new_password = request.data.get("new_password", "")
+        user_id = cache.get(f"invite:{token}") if token else None
+        if not user_id:
+            return Response(
+                {"detail": "Invitation link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not is_password_valid(new_password):
+            return Response(
+                {"detail": PASSWORD_POLICY_DETAIL},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "Invitation link is invalid or has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user.set_password(new_password)
+        user.failed_login_count = 0
+        user.status = User.Status.ACTIVE
+        user.password_changed_at = timezone.now()
+        user.save(update_fields=["password", "failed_login_count", "status", "password_changed_at"])
+        cache.delete(f"invite:{token}")
+        # Also clear the reverse-index pending_invite key.
+        cache.delete(f"pending_invite:{user.user_id}")
+        log_audit_event(
+            user,
+            self.audit_action,
+            target_user=user,
+            request=request,
+        )
+        return Response({"detail": "Account activated. You can now log in."}, status=status.HTTP_200_OK)
+
+
 class MFASetupView(AuditLogMixin, APIView):
-    permission_classes = [IsAuthenticated, IsAdministrator]
+    # Open to every authenticated user — NGO Staff can self-enrol.
+    permission_classes = [IsAuthenticated]
 
     def post(self, request: Request) -> Response:
         secret = pyotp.random_base32()
@@ -222,5 +299,21 @@ class MFAConfirmView(AuditLogMixin, APIView):
             request.user.mfa_secret = encrypt_field(pending_secret)
         except Exception:
             request.user.mfa_secret = pending_secret
-        request.user.save(update_fields=["mfa_secret"])
-        return Response(status=status.HTTP_200_OK)
+        request.user.mfa_enabled_at = timezone.now()
+        request.user.save(update_fields=["mfa_secret", "mfa_enabled_at"])
+
+        backup_codes = generate_backup_codes(request.user)
+        log_audit_event(
+            request.user,
+            AuditAction.MFA_ENABLED,
+            target_user=request.user,
+            request=request,
+        )
+        log_audit_event(
+            request.user,
+            AuditAction.MFA_BACKUP_CODES_GENERATED,
+            new_value=str(len(backup_codes)),
+            target_user=request.user,
+            request=request,
+        )
+        return Response({"backup_codes": backup_codes}, status=status.HTTP_200_OK)

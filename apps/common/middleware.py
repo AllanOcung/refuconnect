@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 
 class SessionInactivityMiddleware:
@@ -32,3 +36,44 @@ class SessionInactivityMiddleware:
         if should_warn:
             response["X-Session-Expiring"] = "true"
         return response
+
+
+class LastSeenMiddleware:
+    """
+    Update ``User.last_seen_at`` on authenticated requests, throttled so we
+    never write more than once per minute per user.  Uses ``.update()`` to
+    bypass auto_now and pre/post-save signals.
+    """
+
+    THROTTLE_SECONDS = 60
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        user = getattr(request, "user", None)
+        if user is not None and getattr(user, "is_authenticated", False):
+            self._touch(user.pk)
+        return response
+
+    def _touch(self, user_id) -> None:
+        cache_key = f"last_seen:{user_id}"
+        try:
+            if cache.get(cache_key):
+                return  # within throttle window
+            # Set the cache flag first so we don't double-write on concurrent requests.
+            cache.set(cache_key, "1", timeout=self.THROTTLE_SECONDS)
+        except Exception:
+            logger.exception("last_seen cache check failed; skipping update")
+            return
+
+        try:
+            # Deferred import to avoid loading the model at app-startup time.
+            from apps.dashboard.models import User as DashboardUser  # noqa: PLC0415
+
+            DashboardUser.objects.filter(pk=user_id).update(
+                last_seen_at=timezone.now()
+            )
+        except Exception:
+            logger.exception("last_seen update failed for user_id=%s", user_id)

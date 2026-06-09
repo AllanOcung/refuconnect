@@ -90,13 +90,27 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=Status.PENDING_VERIFICATION,
         db_index=True,
     )
-    mfa_secret = models.CharField(max_length=64, null=True, blank=True)
+    # Encrypted via apps.common.encryption.encrypt_field — base64 of nonce + ciphertext + auth tag,
+    # widened from the original 64 to fit the AES-GCM output.
+    mfa_secret = models.CharField(max_length=255, null=True, blank=True)
+    mfa_enabled_at = models.DateTimeField(null=True, blank=True)
     failed_login_count = models.SmallIntegerField(default=0)
     last_login_at = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    password_changed_at = models.DateTimeField(null=True, blank=True)
     preferred_language = models.CharField(max_length=10, default="en")
     organisation = models.CharField(max_length=150, blank=True, default="")
+    job_title = models.CharField(max_length=120, blank=True, default="")
+    avatar_url = models.URLField(max_length=500, blank=True, default="")
     receive_alerts = models.BooleanField(default=True)
     alert_phone = models.CharField(max_length=20, null=True, blank=True)
+    invited_by = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="invitees",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -173,6 +187,14 @@ class AuditLog(models.Model):
         on_delete=models.SET_NULL,
         related_name="audit_logs",
     )
+    target_user = models.ForeignKey(
+        "dashboard.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="audit_targets",
+        help_text="The user this event was performed on (subject), distinct from actor.",
+    )
     feedback = models.ForeignKey(
         "feedback.Feedback",
         null=True,
@@ -197,6 +219,7 @@ class AuditLog(models.Model):
             models.Index(fields=["created_at"], name="idx_audit_created_at"),
             models.Index(fields=["action", "created_at"], name="idx_audit_action"),
             models.Index(fields=["user", "created_at"], name="idx_audit_user"),
+            models.Index(fields=["target_user", "created_at"], name="idx_audit_target_user"),
         ]
 
     def __str__(self) -> str:
@@ -290,3 +313,39 @@ class ReportExport(models.Model):
 
     def __str__(self) -> str:
         return f"{self.format} report #{self.export_id}"
+
+
+# ─── BackupCode ──────────────────────────────────────────────────────────────
+
+
+class BackupCode(models.Model):
+    """
+    Single-use MFA backup code.
+
+    Plaintext codes are returned to the user exactly once when generated.
+    Only the bcrypt-style hash is persisted here; lookup at login iterates
+    unused rows and uses ``django.contrib.auth.hashers.check_password``.
+    """
+
+    code_id = models.AutoField(primary_key=True)
+    user = models.ForeignKey(
+        "dashboard.User",
+        on_delete=models.CASCADE,
+        related_name="backup_codes",
+    )
+    code_hash = models.CharField(max_length=255)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "rc_backup_code"
+        verbose_name = "Backup Code"
+        verbose_name_plural = "Backup Codes"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "used_at"], name="idx_backup_user_used"),
+        ]
+
+    def __str__(self) -> str:
+        state = "used" if self.used_at else "unused"
+        return f"BackupCode #{self.code_id} ({state}) for user_id={self.user_id}"
