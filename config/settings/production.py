@@ -34,13 +34,9 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_CREDENTIALS = True
 
 # ─── Email ───────────────────────────────────────────────────────────────────
+# All EMAIL_* config now lives in base.py (env-driven).
+# In production we hard-require the SMTP backend regardless of env.
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
-EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
-EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
-EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True") == "True"
-EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
-EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
-DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "RefuConnect <noreply@refuconnect.org>")
 
 # ─── Sentry (optional) ───────────────────────────────────────────────────────
 _sentry_dsn = os.environ.get("SENTRY_DSN", "")

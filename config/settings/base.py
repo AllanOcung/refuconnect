@@ -55,6 +55,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "apps.common.middleware.SessionInactivityMiddleware",
+    "apps.common.middleware.LastSeenMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -157,6 +158,17 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.common.exceptions.custom_exception_handler",
 }
 
+# ─── CORS ────────────────────────────────────────────────────────────────────
+# Allow the ngrok-skip-browser-warning header so CORS preflight succeeds when
+# the frontend (hosted off-host) calls the API via an ngrok-free tunnel.
+# Default list from django-cors-headers + ngrok header.
+from corsheaders.defaults import default_headers as _cors_default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = (
+    *_cors_default_headers,
+    "ngrok-skip-browser-warning",
+)
+
 # ─── JWT ─────────────────────────────────────────────────────────────────────
 from datetime import timedelta
 
@@ -237,10 +249,27 @@ AT_API_KEY = os.environ.get("AT_API_KEY", AFRICAS_TALKING_API_KEY)
 # Skip SMS signature verification (useful for sandbox/local testing)
 AT_SKIP_SMS_SIGNATURE = os.environ.get("AT_SKIP_SMS_SIGNATURE", "").lower() in ("true", "1", "yes")
 
-# Email / dashboard session / report settings
+# ─── Email (SMTP) ────────────────────────────────────────────────────────────
+# Env-driven so every environment (dev, prod, localtest) reads the same vars.
+# Default backend is console — set EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+# in .env to enable real delivery.
+EMAIL_BACKEND = os.environ.get(
+    "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend"
+)
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True").lower() in ("true", "1", "yes")
+EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "False").lower() in ("true", "1", "yes")
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_TIMEOUT = int(os.environ.get("EMAIL_TIMEOUT", "15"))
+
 DEFAULT_FROM_EMAIL = os.environ.get(
     "DEFAULT_FROM_EMAIL", "RefuConnect <noreply@refuconnect.org>"
 )
+SERVER_EMAIL = os.environ.get("SERVER_EMAIL", DEFAULT_FROM_EMAIL)
+
+# Dashboard session / report settings
 REPORT_LOGO_PATH = os.environ.get("REPORT_LOGO_PATH", "static/images/logo.png")
 REPORT_MAX_RAW_ROWS = int(os.environ.get("REPORT_MAX_RAW_ROWS", "10000"))
 SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("SESSION_INACTIVITY_TIMEOUT", "900"))

@@ -22,7 +22,9 @@ ALLOWED_HOSTS = ["*"]
 CORS_ALLOW_ALL_ORIGINS = True
 
 # ─── Email ───────────────────────────────────────────────────────────────────
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+# EMAIL_* config is read from env via base.py.
+# Set EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend in .env to use real SMTP
+# in development; otherwise the base default (console) keeps messages out of inboxes.
 
 # ─── Debug toolbar ───────────────────────────────────────────────────────────
 try:

@@ -157,7 +157,34 @@ class AuditLogView(AuditLogMixin, generics.ListAPIView):
     http_method_names = ["get", "head", "options"]
 
     def get_queryset(self):
-        return AuditLog.objects.select_related("user", "feedback").order_by("-created_at")
+        return (
+            AuditLog.objects
+            .select_related("user", "target_user", "feedback")
+            .order_by("-created_at")
+        )
+
+
+class MyActivityView(AuditLogMixin, generics.ListAPIView):
+    """
+    Per-user activity timeline.
+
+    Returns audit-log rows where the calling user is the ``target_user``
+    (i.e. the *subject* of the event). Available to any authenticated user
+    without admin role — they can only ever see their own row.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = AuditLogSerializer
+    pagination_class = AuditLogPagination
+    http_method_names = ["get", "head", "options"]
+
+    def get_queryset(self):
+        return (
+            AuditLog.objects
+            .filter(target_user_id=self.request.user.pk)
+            .select_related("user", "target_user", "feedback")
+            .order_by("-created_at")
+        )
 
 
 class CategoryListView(AuditLogMixin, APIView):

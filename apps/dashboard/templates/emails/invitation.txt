@@ -1,0 +1,11 @@
+Hi {{ invitee_name }},
+
+{{ inviter_name }} has invited you to join RefuConnect as {{ role_display }}.
+
+Set your password and activate your account using this link (valid for {{ expires_in_days }} days):
+
+{{ invite_url }}
+
+If you weren't expecting this invitation you can ignore this message.
+
+— RefuConnect

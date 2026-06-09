@@ -15,6 +15,7 @@ from apps.dashboard.views.analytics import (
     ThemeSummaryView,
 )
 from apps.dashboard.views.auth import (
+    AcceptInviteView,
     LoginView,
     LogoutView,
     MFAConfirmView,
@@ -27,6 +28,7 @@ from apps.dashboard.views.feedback import (
     CategoryListView,
     FeedbackDetailView,
     FeedbackListView,
+    MyActivityView,
 )
 from apps.dashboard.views.reports import (
     ReportGenerateView,
@@ -34,11 +36,26 @@ from apps.dashboard.views.reports import (
     ReportTaskDownloadView,
     ReportTaskStatusView,
 )
+from apps.dashboard.views.mfa import (
+    BackupCodesRegenerateView,
+    BackupCodesStatusView,
+    MFADisableView,
+)
+from apps.dashboard.views.profile import (
+    ChangePasswordView,
+    LogoutAllSessionsView,
+    MeView,
+)
 from apps.dashboard.views.users import (
     UserDetailView,
     UserInviteView,
     UserListView,
     UserUnlockView,
+)
+from apps.dashboard.views.users_invites import (
+    UserBulkInviteView,
+    UserResendInviteView,
+    UserRevokeInviteView,
 )
 
 app_name = "dashboard"
@@ -57,6 +74,7 @@ urlpatterns = [
         PasswordResetConfirmView.as_view(),
         name="password-reset-confirm",
     ),
+    path("auth/accept-invite/", AcceptInviteView.as_view(), name="accept-invite"),
     path("auth/mfa/setup/", MFASetupView.as_view(), name="mfa-setup"),
     path("auth/mfa/confirm/", MFAConfirmView.as_view(), name="mfa-confirm"),
     path("feedback/", FeedbackListView.as_view(), name="feedback-list"),
@@ -96,6 +114,33 @@ urlpatterns = [
     ),
     path("users/", UserListView.as_view(), name="user-list"),
     path("users/invite/", UserInviteView.as_view(), name="user-invite"),
+    path("users/bulk-invite/", UserBulkInviteView.as_view(), name="user-bulk-invite"),
     path("users/<int:user_id>/", UserDetailView.as_view(), name="user-detail"),
     path("users/<int:user_id>/unlock/", UserUnlockView.as_view(), name="user-unlock"),
+    path(
+        "users/<int:user_id>/resend-invite/",
+        UserResendInviteView.as_view(),
+        name="user-resend-invite",
+    ),
+    path(
+        "users/<int:user_id>/revoke-invite/",
+        UserRevokeInviteView.as_view(),
+        name="user-revoke-invite",
+    ),
+    # Self-service (any authenticated user)
+    path("me/", MeView.as_view(), name="me"),
+    path("me/password/", ChangePasswordView.as_view(), name="me-password"),
+    path("me/sessions/revoke/", LogoutAllSessionsView.as_view(), name="me-sessions-revoke"),
+    path("me/mfa/disable/", MFADisableView.as_view(), name="me-mfa-disable"),
+    path(
+        "me/mfa/backup-codes/",
+        BackupCodesStatusView.as_view(),
+        name="me-mfa-backup-codes",
+    ),
+    path(
+        "me/mfa/backup-codes/regenerate/",
+        BackupCodesRegenerateView.as_view(),
+        name="me-mfa-backup-codes-regenerate",
+    ),
+    path("me/activity/", MyActivityView.as_view(), name="me-activity"),
 ]

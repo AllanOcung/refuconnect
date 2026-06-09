@@ -21,6 +21,7 @@ from apps.dashboard.serializers.reports import (
     ReportGenerateSerializer,
 )
 from apps.dashboard.serializers.users import (
+    ChangePasswordSerializer,
     FeedbackReviewedBySerializer,
     UserInviteSerializer,
     UserSerializer,
@@ -30,6 +31,7 @@ __all__ = [
     "AlertSerializer",
     "AuditLogSerializer",
     "AuditTrailSerializer",
+    "ChangePasswordSerializer",
     "FeedbackAlertSerializer",
     "FeedbackCategoryDetailSerializer",
     "FeedbackCategoryListSerializer",
