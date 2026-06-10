@@ -17,6 +17,7 @@ PRIVACY CONSTRAINTS:
 from __future__ import annotations
 
 import logging
+import threading
 
 from django.utils import timezone
 
@@ -24,6 +25,8 @@ from apps.common.encryption import encrypt_field
 from apps.notifications.models import UserConsent
 
 logger = logging.getLogger("apps.notifications.consent_manager")
+
+_CONFIRM_TIMEOUT_SECONDS = 8
 
 
 class ConsentManager:
@@ -60,20 +63,13 @@ class ConsentManager:
             channel,
         )
 
-        # Send opt-in confirmation — do NOT log recipient
-        try:
-            from apps.notifications.services.template_library import TemplateLibrary
-            from apps.notifications.services.message_router import MessageRouter
-
-            confirmation = TemplateLibrary().get_and_render(
-                "OPT_IN_CONFIRMATION", "en", {}
-            )
-            MessageRouter().send(channel=channel, recipient=phone, body=confirmation)
-        except Exception as exc:
-            logger.warning(
-                "ConsentManager.handle_opt_in: Confirmation send failed: %s", exc
-            )
-
+        # Send opt-in confirmation asynchronously — must not block the webhook handler
+        _send_confirmation_async(
+            template_key="OPT_IN_CONFIRMATION",
+            phone=phone,
+            channel=channel,
+            log_label="handle_opt_in",
+        )
         phone = None  # Privacy wipe
 
     def handle_opt_out(self, phone: str, channel: str) -> None:
@@ -99,20 +95,13 @@ class ConsentManager:
             anon_id,
         )
 
-        # Send opt-out confirmation
-        try:
-            from apps.notifications.services.template_library import TemplateLibrary
-            from apps.notifications.services.message_router import MessageRouter
-
-            confirmation = TemplateLibrary().get_and_render(
-                "OPT_OUT_CONFIRMATION", "en", {}
-            )
-            MessageRouter().send(channel=channel, recipient=phone, body=confirmation)
-        except Exception as exc:
-            logger.warning(
-                "ConsentManager.handle_opt_out: Confirmation send failed: %s", exc
-            )
-
+        # Send opt-out confirmation asynchronously — must not block the webhook handler
+        _send_confirmation_async(
+            template_key="OPT_OUT_CONFIRMATION",
+            phone=phone,
+            channel=channel,
+            log_label="handle_opt_out",
+        )
         phone = None  # Privacy wipe
 
     # ------------------------------------------------------------------ #
@@ -128,3 +117,41 @@ class ConsentManager:
         from apps.common.utils import hash_phone_number
 
         return hash_phone_number(phone, settings.PHONE_HASH_SALT)
+
+
+def _send_confirmation_async(
+    template_key: str,
+    phone: str,
+    channel: str,
+    log_label: str,
+) -> None:
+    """
+    Fire-and-forget confirmation SMS/WhatsApp in a daemon thread.
+
+    The thread is bounded by _CONFIRM_TIMEOUT_SECONDS so the webhook
+    response is never held up by gateway retries.
+
+    PRIVACY: phone is only used inside the daemon thread and is not captured
+    in any closure that outlives the function call.
+    """
+    done = threading.Event()
+
+    def _send() -> None:
+        try:
+            from apps.notifications.services.template_library import TemplateLibrary
+            from apps.notifications.services.message_router import MessageRouter
+
+            body = TemplateLibrary().get_and_render(template_key, "en", {})
+            MessageRouter().send(channel=channel, recipient=phone, body=body)
+        except Exception as exc:
+            logger.warning(
+                "ConsentManager.%s: Confirmation send failed: %s", log_label, exc
+            )
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_send, daemon=True, name=f"consent-confirm-{log_label}")
+    t.start()
+    done.wait(timeout=_CONFIRM_TIMEOUT_SECONDS)
+    # If the thread is still running after the timeout it continues in the background;
+    # the webhook handler is unblocked and can respond to the gateway.

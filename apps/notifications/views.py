@@ -218,7 +218,7 @@ class BroadcastListCreateView(APIView):
 
 
 class BroadcastEstimateView(APIView):
-    """GET /api/v1/broadcasts/estimate/ — pre-flight recipient count"""
+    """POST /api/v1/broadcasts/estimate/ — pre-flight recipient count (accepts a request body)"""
 
     permission_classes = [IsNGOStaff]
 

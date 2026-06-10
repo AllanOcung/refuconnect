@@ -33,6 +33,100 @@ class FeedbackNotFoundError(Exception):
     """Raised when the requested Feedback record does not exist."""
 
 
+# ─── Module-level helpers (used by normaliser + feedback/tasks retry path) ────
+
+def compose_acknowledgement(feedback, language: str = "en", reference_id: str | None = None) -> str:
+    """
+    Render the ACKNOWLEDGEMENT template for a given feedback record and language.
+    Appends the OPT_IN_PROMPT so the user knows to reply YES/NO.
+
+    Parameters
+    ----------
+    feedback:     Feedback instance.
+    language:     BCP-47 code; falls back to 'en' if template not found.
+    reference_id: Pre-generated reference string; generated here if not supplied.
+    """
+    from apps.common.utils import generate_reference_id
+    from apps.notifications.services.template_library import TemplateLibrary
+    from apps.common.exceptions import TemplateNotFoundError
+
+    if reference_id is None:
+        reference_id = generate_reference_id(feedback.pk)
+
+    lib = TemplateLibrary()
+
+    # Render the main acknowledgement
+    try:
+        body = lib.get_and_render("ACKNOWLEDGEMENT", language, {"reference_id": reference_id})
+    except TemplateNotFoundError:
+        body = f"Thank you for your feedback (Ref: {reference_id})."
+
+    # Append the opt-in prompt so users know they can reply YES/NO
+    try:
+        prompt = lib.get_and_render("OPT_IN_PROMPT", language, {})
+        body = f"{body}\n{prompt}"
+    except TemplateNotFoundError:
+        pass  # prompt template not yet available — skip silently
+
+    return body
+
+
+def route_notification(notification) -> bool:
+    """
+    Send a queued Notification to its recipient by looking up the consent record.
+
+    Fetches the active UserConsent for the notification's feedback, decrypts
+    the phone number, dispatches via MessageRouter, then immediately zeros the phone.
+
+    Returns True on success, False if consent is missing or send fails.
+
+    PRIVACY: decrypted phone is zeroed immediately after the send call.
+    """
+    from apps.common.encryption import decrypt_field
+    from apps.notifications.models import UserConsent
+    from apps.notifications.services.message_router import MessageRouter
+
+    if notification.feedback_id is None:
+        logger.warning(
+            "route_notification: notification_id=%d has no linked feedback — cannot resolve recipient.",
+            notification.pk,
+        )
+        return False
+
+    consent = UserConsent.objects.filter(
+        anonymous_user_id=notification.feedback.anonymous_user_id,
+        is_active=True,
+    ).first()
+
+    if consent is None:
+        logger.info(
+            "route_notification: No active consent for feedback_id=%d — skipping.",
+            notification.feedback_id,
+        )
+        return False
+
+    try:
+        recipient = decrypt_field(consent.phone_number_encrypted)
+    except Exception as exc:
+        logger.error(
+            "route_notification: Decryption failed for consent_id=%d: %s",
+            consent.pk,
+            exc,
+        )
+        return False
+
+    result = MessageRouter().send(
+        channel=notification.channel,
+        recipient=recipient,
+        body=notification.content,
+        notification_record=notification,
+    )
+
+    recipient = None  # Privacy wipe — noqa: F841
+
+    return result["status"] == "Sent"
+
+
 class ResponseComposer:
     """Composes and dispatches targeted NGO-staff responses to individual feedback."""
 
