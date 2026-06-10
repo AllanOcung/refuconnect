@@ -232,7 +232,7 @@ def retry_failed_acknowledgement(
             )
             return
 
-        msg_body = compose_acknowledgement(feedback, language=language)
+        msg_body = compose_acknowledgement(feedback, language=language, reference_id=reference_id)
         notification = Notification.objects.create(
             feedback=feedback,
             message_type=Notification.MessageType.ACKNOWLEDGEMENT,

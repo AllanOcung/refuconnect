@@ -165,6 +165,8 @@ class BroadcastManager:
         elif target_type == Broadcast.TargetType.BY_FEEDBACK_IDS:
             broadcast.target_feedback_ids = target_params.get("feedback_ids", [])
 
+        broadcast.channels = channels or ["SMS", "WhatsApp"]
+
         # Validate recipients before saving
         consents = resolve_broadcast_recipients(broadcast)
         if consents.count() == 0:

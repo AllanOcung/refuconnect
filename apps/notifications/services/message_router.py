@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import time
 
-import httpx
+import requests
 from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
@@ -276,11 +276,15 @@ class MessageRouter:
             self._sms = africastalking.SMS
             self._at_initialised = True
 
+        # AT sandbox does not accept custom sender IDs — use None in sandbox mode
+        is_sandbox = getattr(settings, "AFRICAS_TALKING_USERNAME", "") == "sandbox"
+        sender_id = None if is_sandbox else (settings.SMS_SHORT_CODE or None)
+
         try:
             response = self._sms.send(
                 message=body,
                 recipients=[recipient],
-                sender_id=settings.SMS_SHORT_CODE or None,
+                sender_id=sender_id,
             )
         except Exception as exc:
             raise GatewayError(f"Africa's Talking SDK error: {exc}") from exc
@@ -339,9 +343,8 @@ class MessageRouter:
             }
 
         try:
-            with httpx.Client(timeout=8.0) as client:
-                response = client.post(url, json=payload, headers=headers)
-        except httpx.TimeoutException as exc:
+            response = requests.post(url, json=payload, headers=headers, timeout=8.0)
+        except requests.Timeout as exc:
             raise GatewayError("WhatsApp API timed out after 8 seconds.") from exc
         except Exception as exc:
             raise GatewayError(f"WhatsApp HTTP error: {exc}") from exc

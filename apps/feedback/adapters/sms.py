@@ -256,6 +256,24 @@ class SMSWebhookView(APIView):
             logger.warning("SMSWebhookView: Empty body after assembly — skipping")
             return Response({"detail": "ok"}, status=status.HTTP_200_OK)
 
+        # Consent routing: YES/NO replies must not create Feedback records
+        normalised_body = body.strip().upper()
+        if normalised_body in ("YES", "Y"):
+            try:
+                from apps.notifications.services.consent_manager import ConsentManager
+                ConsentManager().handle_opt_in(phone=phone, channel="SMS")
+            except Exception:
+                logger.exception("SMSWebhookView: handle_opt_in failed for message_id=%s", message_id)
+            return Response({"detail": "ok"}, status=status.HTTP_200_OK)
+
+        if normalised_body in ("NO", "N", "STOP"):
+            try:
+                from apps.notifications.services.consent_manager import ConsentManager
+                ConsentManager().handle_opt_out(phone=phone, channel="SMS")
+            except Exception:
+                logger.exception("SMSWebhookView: handle_opt_out failed for message_id=%s", message_id)
+            return Response({"detail": "ok"}, status=status.HTTP_200_OK)
+
         # Step 4: Build raw_message and delegate to MessageNormaliser
         raw_message: dict = {
             "channel": "SMS",

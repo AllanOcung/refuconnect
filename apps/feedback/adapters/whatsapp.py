@@ -402,6 +402,28 @@ class WhatsAppWebhookView(APIView):
             )
             return
 
+        # Consent routing: YES/NO text replies must not create Feedback records
+        if msg_type == "text":
+            normalised_body = body.strip().upper()
+            if normalised_body in ("YES", "Y"):
+                try:
+                    from apps.notifications.services.consent_manager import ConsentManager
+                    ConsentManager().handle_opt_in(phone=sender, channel="WhatsApp")
+                except Exception:
+                    logger.exception(
+                        "WhatsAppWebhookView: handle_opt_in failed for sender=[redacted]"
+                    )
+                return
+            if normalised_body in ("NO", "N", "STOP"):
+                try:
+                    from apps.notifications.services.consent_manager import ConsentManager
+                    ConsentManager().handle_opt_out(phone=sender, channel="WhatsApp")
+                except Exception:
+                    logger.exception(
+                        "WhatsAppWebhookView: handle_opt_out failed for sender=[redacted]"
+                    )
+                return
+
         raw_message: dict = {
             "channel": "WhatsApp",
             "sender": sender,

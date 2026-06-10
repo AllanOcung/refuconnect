@@ -115,7 +115,7 @@ class UserConsent(models.Model):
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        db_table = "consent_schema_user_consent"
+        db_table = '"consent_schema"."user_consent"'
         verbose_name = "User Consent"
         verbose_name_plural = "User Consents"
         ordering = ["-consent_given_at"]
@@ -245,6 +245,12 @@ class Broadcast(models.Model):
         null=True,
         blank=True,
         help_text="When target_type='by_feedback_ids': list of specific feedback_ids.",
+    )
+    channels = models.JSONField(
+        default=list,
+        help_text="List of channels to send on, e.g. ['SMS', 'WhatsApp']. "
+                  "Recipients are sent on their preferred channel if it appears here, "
+                  "otherwise on the first channel in this list.",
     )
     status = models.CharField(
         max_length=20,

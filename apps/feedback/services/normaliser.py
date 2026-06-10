@@ -118,9 +118,18 @@ class MessageNormaliser:
         sender: str = raw_message.get("sender") or ""
         anonymous_user_id = self._get_or_create_anon_id(sender)
 
+        # Encrypt a copy of the phone for the ack-send path (first-time users
+        # have no UserConsent yet, so route_notification cannot resolve their
+        # phone from DB; we hand an encrypted copy to _dispatch_acknowledgement
+        # so it can still reply to the inbound message).
+        from apps.common.encryption import encrypt_field as _encrypt
+        _encrypted_sender = _encrypt(sender) if sender else None
+        del _encrypt  # cleanup import alias
+
         # PASSWORD ZERO: erase phone number from the in-memory dict immediately.
         # Anything below this line must ONLY use anonymous_user_id.
         raw_message["sender"] = None
+        sender = ""  # belt-and-suspenders zero
 
         # ── Step 2: Duplicate detection ────────────────────────────────────
         channel: str = raw_message.get("channel", "SMS")
@@ -133,6 +142,23 @@ class MessageNormaliser:
         from apps.feedback.models import Feedback
 
         language_hint: Optional[str] = raw_message.get("language_hint") or None
+
+        # For SMS/WhatsApp there is no pre-supplied hint. Detect the language now,
+        # synchronously, so the ack and Feedback.language are both correct
+        # immediately — without waiting for the async NLP pipeline.
+        if not language_hint and channel in ("SMS", "WhatsApp") and body:
+            try:
+                from apps.nlp.pipeline.language_detector import detect_language
+                _lang, _conf, _flags = detect_language(body)
+                if _lang not in ("unknown", "other"):
+                    language_hint = _lang
+            except Exception:
+                logger.warning(
+                    "MessageNormaliser: Inline language detection failed for channel=%s "
+                    "— ack will be sent in 'en'",
+                    channel,
+                )
+
         received_at: datetime = raw_message.get("received_at") or datetime.now(
             stdlib_timezone.utc
         )
@@ -183,6 +209,7 @@ class MessageNormaliser:
                 feedback_id=feedback_id,
                 channel=channel,
                 language=language_hint or "en",
+                encrypted_phone=_encrypted_sender,
             )
         else:
             logger.debug(
@@ -340,6 +367,7 @@ class MessageNormaliser:
         feedback_id: int,
         channel: str,
         language: str,
+        encrypted_phone: str | None = None,
     ) -> None:
         """
         Send an acknowledgement message via the appropriate channel adapter.
@@ -351,9 +379,13 @@ class MessageNormaliser:
 
         Parameters
         ----------
-        feedback_id: ID of the newly created Feedback record.
-        channel:     'SMS' | 'USSD' | 'WhatsApp'.
-        language:    ISO 639-1 language code for the template.
+        feedback_id:     ID of the newly created Feedback record.
+        channel:         'SMS' | 'USSD' | 'WhatsApp'.
+        language:        ISO 639-1 language code for the template.
+        encrypted_phone: AES-256-GCM ciphertext of the sender's phone (from
+                         the inbound message).  Used for first-time users who
+                         have no UserConsent record yet — without this they
+                         would never receive the opt-in invite.
         """
         if channel == "USSD":
             logger.debug(
@@ -369,40 +401,58 @@ class MessageNormaliser:
 
         def _send() -> None:
             try:
-                from apps.notifications.services.message_router import route_notification
                 from apps.notifications.services.response_composer import compose_acknowledgement
-                from apps.feedback.models import Feedback
+                from apps.notifications.services.message_router import MessageRouter
                 from apps.notifications.models import Notification, UserConsent
+                from apps.common.encryption import decrypt_field
+                from apps.feedback.models import Feedback
 
                 feedback = Feedback.objects.get(pk=feedback_id)
 
-                # Retrieve an active consent record for this anonymous user
+                # Resolve the recipient phone.  Prefer the consent record
+                # (returning users, respects channel_preference).  Fall back to
+                # the encrypted phone carried over from the inbound message
+                # (first-time users who have no consent yet — they must still
+                # receive the opt-in invite so they can reply YES).
                 consent = UserConsent.objects.filter(
                     anonymous_user_id=feedback.anonymous_user_id,
                     is_active=True,
                 ).first()
-                if consent is None:
-                    # No consent on file — can't send outbound message.
+
+                if consent is not None:
+                    recipient = decrypt_field(consent.phone_number_encrypted)
+                    send_channel = consent.channel_preference
+                elif encrypted_phone:
+                    recipient = decrypt_field(encrypted_phone)
+                    send_channel = channel
+                else:
                     logger.info(
-                        "MessageNormaliser: No active consent for feedback_id=%d; ack skipped",
+                        "MessageNormaliser: No consent and no phone for feedback_id=%d; ack skipped",
                         feedback_id,
                     )
                     result_holder["success"] = True  # not an error
                     return
 
-                msg_body = compose_acknowledgement(feedback, language=language)
+                msg_body = compose_acknowledgement(feedback, language=language, reference_id=reference_id)
                 notification = Notification.objects.create(
                     feedback=feedback,
                     message_type=Notification.MessageType.ACKNOWLEDGEMENT,
                     content=msg_body,
                     delivery_language=language,
-                    channel=channel,
+                    channel=send_channel,
                     delivery_status=Notification.DeliveryStatus.QUEUED,
                 )
-                success = route_notification(notification)
+                result = MessageRouter().send(
+                    channel=send_channel,
+                    recipient=recipient,
+                    body=msg_body,
+                    notification_record=notification,
+                )
+                recipient = None  # Privacy wipe
+                success = result["status"] == "Sent"
                 result_holder["success"] = success
                 if not success:
-                    result_holder["error"] = "route_notification returned False"
+                    result_holder["error"] = "MessageRouter returned Failed"
             except Exception as exc:
                 result_holder["error"] = str(exc)
                 logger.exception(

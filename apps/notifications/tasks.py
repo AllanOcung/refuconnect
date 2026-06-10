@@ -114,17 +114,29 @@ def dispatch_broadcast(self, broadcast_id: int) -> None:
     router = MessageRouter()
     sent = 0
     failed = 0
+    broadcast_channels = broadcast.channels or ["SMS", "WhatsApp"]
 
     # Process in batches using consent_id list so we can paginate safely
     consent_ids = list(consents.values_list("consent_id", flat=True))
 
     for batch_start in range(0, len(consent_ids), _BATCH_SIZE):
         batch_ids = consent_ids[batch_start : batch_start + _BATCH_SIZE]
-        batch = UserConsent.objects.filter(consent_id__in=batch_ids)
+        batch = list(UserConsent.objects.filter(consent_id__in=batch_ids))
+
+        # One query per batch: resolve each recipient's preferred language from
+        # their most recent feedback submission.
+        from apps.feedback.models import Feedback
+        anon_ids = [c.anonymous_user_id for c in batch]
+        lang_map = dict(
+            Feedback.objects.filter(anonymous_user_id__in=anon_ids)
+            .order_by("anonymous_user_id", "-submitted_at")
+            .distinct("anonymous_user_id")
+            .values_list("anonymous_user_id", "language")
+        )
 
         for consent in batch:
             # Pick message body in the closest available language
-            lang = _pick_language(consent, translations)
+            lang = _pick_language(consent, translations, lang_map)
             body = translations.get(lang, translations.get("en", broadcast.body_en))
 
             # Decrypt phone — IN MEMORY ONLY, never log or store
@@ -139,7 +151,11 @@ def dispatch_broadcast(self, broadcast_id: int) -> None:
                 failed += 1
                 continue
 
-            channel = consent.channel_preference
+            channel = (
+                consent.channel_preference
+                if consent.channel_preference in broadcast_channels
+                else broadcast_channels[0]
+            )
 
             # Create notification record
             notification = Notification.objects.create(
@@ -389,14 +405,14 @@ def _get_supported_languages() -> list[str]:
     return [lang.strip() for lang in raw.split(",") if lang.strip()]
 
 
-def _pick_language(consent, translations: dict) -> str:
+def _pick_language(consent, translations: dict, lang_map: dict | None = None) -> str:
     """
     Select the best available language for a recipient.
-    Falls back through channel_preference hint → English.
+
+    Uses the pre-fetched lang_map (anonymous_user_id → language from their most
+    recent feedback) to pick a translated version. Falls back to English.
     """
-    # In a richer implementation you'd store the feedback language on consent.
-    # For now, try to match the channel preference as a language hint, then en.
-    preferred = getattr(consent, "preferred_language", "en") or "en"
+    preferred = (lang_map or {}).get(consent.anonymous_user_id) or "en"
     if preferred in translations:
         return preferred
     return "en"
