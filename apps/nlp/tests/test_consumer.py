@@ -149,23 +149,63 @@ class TestPipelineConsumer:
             "location",
         ]
 
-    def test_component_failure_causes_processing_failed(self, feedback):
-        """Any component raising must propagate, retry, and ultimately produce ProcessingFailed."""
+    def test_component_failure_propagates_and_leaves_processing(self, feedback):
+        """A component raising must propagate and leave the record in 'Processing'.
+
+        Retry scheduling and the terminal 'ProcessingFailed' transition now live
+        in the Celery task layer (see apps.nlp.tests.test_tasks), so a single
+        consumer run only marks 'Processing' and re-raises.
+        """
         with mock.patch(
             "apps.nlp.pipeline.language_detector.detect_language",
             side_effect=ValueError("Model not found"),
-        ), mock.patch(
-            "apps.nlp.pipeline.consumer.time.sleep"
-        ), mock.patch(
-            "apps.nlp.pipeline.alert_manager.AlertManager.dispatch"
-        ) as mock_alert:
+        ):
             with pytest.raises(ValueError):
                 process_feedback(feedback.feedback_id)
 
         feedback.refresh_from_db()
-        assert feedback.status == "ProcessingFailed"
-        # AlertManager must be notified on terminal failure
-        mock_alert.assert_called_once()
+        assert feedback.status == "Processing"
+
+    def test_concurrent_location_reply_not_clobbered(self, feedback):
+        """A submitter-provided location written mid-pipeline must survive the save.
+
+        The submitter can supply a location via a follow-up SMS/WhatsApp reply,
+        which the channel adapter writes straight to the DB after the pipeline has
+        already loaded the record. The pipeline must not overwrite it with the
+        stale (empty) in-memory value. Here the sentiment stage simulates that
+        concurrent reply landing, and location extraction finds nothing.
+        """
+        assert not feedback.location
+
+        def sentiment_writes_location(_feedback, translation_failed=False):
+            # Simulate the location reply arriving while the pipeline runs.
+            Feedback.objects.filter(pk=_feedback.pk).update(location="Kakuma")
+            return None, 0.0, {"sentiment_used_untranslated_text": False}
+
+        with mock.patch(
+            "apps.nlp.pipeline.language_detector.detect_language",
+            return_value=("en", 0.95),
+        ), mock.patch(
+            "apps.nlp.pipeline.translation_service.translate_to_english",
+            return_value=("text", {}),
+        ), mock.patch(
+            "apps.nlp.pipeline.topic_classifier.classify_topics",
+            return_value=([], {}),
+        ), mock.patch(
+            "apps.nlp.pipeline.urgency_assessor.assess_feedback_urgency",
+            return_value=("Low", "default", {}),
+        ), mock.patch(
+            "apps.nlp.pipeline.sentiment_analyser.analyse_feedback_sentiment",
+            side_effect=sentiment_writes_location,
+        ), mock.patch(
+            "apps.nlp.pipeline.location_extractor.extract_location",
+            return_value=None,
+        ):
+            process_feedback(feedback.feedback_id)
+
+        feedback.refresh_from_db()
+        assert feedback.status == "Processed"
+        assert feedback.location == "Kakuma"
 
     def test_alert_created_for_high_urgency(self, feedback):
         """High-urgency feedback should trigger auto-alert creation after save."""
@@ -278,45 +318,6 @@ class TestPipelineConsumer:
         assert feedback.status == "Processed"
         assert feedback.message_text_en == "Habari yako"
         mock_translate.assert_not_called()
-
-    def test_retry_logic_with_exponential_backoff(self, feedback):
-        """Failed attempts should retry with correct delays (30s, 120s, 300s)."""
-        attempt_count = [0]
-        delays_recorded = []
-
-        def mock_run_pipeline(f, ctx):
-            attempt_count[0] += 1
-            if attempt_count[0] < 3:
-                raise ValueError(f"Simulated failure {attempt_count[0]}")
-
-        with mock.patch(
-            "apps.nlp.pipeline.consumer._run_pipeline",
-            side_effect=mock_run_pipeline,
-        ), mock.patch(
-            "apps.nlp.pipeline.consumer.time.sleep",
-            side_effect=lambda delay: delays_recorded.append(delay),
-        ):
-            process_feedback(feedback.feedback_id)
-
-        # Should have retried twice with correct delays
-        assert delays_recorded == [30, 120]
-        # Final status should be Processed (success on 3rd attempt)
-        feedback.refresh_from_db()
-        assert feedback.status == "Processed"
-
-    def test_final_failure_after_3_retries(self, feedback):
-        """After 3 failed attempts, status should be ProcessingFailed."""
-        with mock.patch(
-            "apps.nlp.pipeline.consumer._run_pipeline",
-            side_effect=ValueError("Persistent failure"),
-        ), mock.patch(
-            "apps.nlp.pipeline.consumer.time.sleep"
-        ):
-            with pytest.raises(ValueError):
-                process_feedback(feedback.feedback_id)
-
-        feedback.refresh_from_db()
-        assert feedback.status == "ProcessingFailed"
 
     def test_nonexistent_feedback_handled_gracefully(self):
         """Nonexistent feedback should be logged and skipped."""

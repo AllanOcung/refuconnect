@@ -63,11 +63,13 @@ class ConsentManager:
             channel,
         )
 
-        # Send opt-in confirmation asynchronously — must not block the webhook handler
+        # Send opt-in confirmation asynchronously — must not block the webhook handler.
+        # Use the language of the user's feedback so the confirmation matches.
         _send_confirmation_async(
             template_key="OPT_IN_CONFIRMATION",
             phone=phone,
             channel=channel,
+            language=self._resolve_user_language(anon_id),
             log_label="handle_opt_in",
         )
         phone = None  # Privacy wipe
@@ -95,11 +97,13 @@ class ConsentManager:
             anon_id,
         )
 
-        # Send opt-out confirmation asynchronously — must not block the webhook handler
+        # Send opt-out confirmation asynchronously — must not block the webhook handler.
+        # Use the language of the user's feedback so the confirmation matches.
         _send_confirmation_async(
             template_key="OPT_OUT_CONFIRMATION",
             phone=phone,
             channel=channel,
+            language=self._resolve_user_language(anon_id),
             log_label="handle_opt_out",
         )
         phone = None  # Privacy wipe
@@ -110,19 +114,45 @@ class ConsentManager:
 
     def _hash_to_anon_id(self, phone: str) -> str:
         """
-        Produce the same anonymous_user_id as MessageNormaliser for a given phone.
-        Uses the same SALT and hash function, linking consent to past feedback.
-        """
-        from django.conf import settings
-        from apps.common.utils import hash_phone_number
+        Produce the SAME anonymous_user_id as MessageNormaliser for a given phone,
+        so the consent record links to that user's feedback.
 
-        return hash_phone_number(phone, settings.PHONE_HASH_SALT)
+        MessageNormaliser does not store the raw phone hash as the id — it caches
+        an ``ANON-<epoch>-<hash[:8]>`` value in Redis keyed by the salted phone
+        hash (rotating after the TTL). We must derive the id the exact same way,
+        otherwise consent records key off a value that never matches any feedback
+        (breaking both the targeted-response consent check and the follow-up
+        language lookup). Within the opt-in window this returns the very id stored
+        on the feedback that triggered the opt-in prompt.
+        """
+        from apps.feedback.services.normaliser import MessageNormaliser
+
+        return MessageNormaliser._get_or_create_anon_id(phone)
+
+    def _resolve_user_language(self, anon_id: str) -> str:
+        """
+        Best-effort language for a follow-up confirmation: the language of this
+        user's most recent feedback, so the reply matches the language the
+        feedback was submitted in. Falls back to English when unknown.
+        """
+        from apps.feedback.models import Feedback
+
+        language = (
+            Feedback.objects.filter(anonymous_user_id=anon_id)
+            .order_by("-submitted_at")
+            .values_list("language", flat=True)
+            .first()
+        )
+        if language and language != "unknown":
+            return language
+        return "en"
 
 
 def _send_confirmation_async(
     template_key: str,
     phone: str,
     channel: str,
+    language: str,
     log_label: str,
 ) -> None:
     """
@@ -141,7 +171,7 @@ def _send_confirmation_async(
             from apps.notifications.services.template_library import TemplateLibrary
             from apps.notifications.services.message_router import MessageRouter
 
-            body = TemplateLibrary().get_and_render(template_key, "en", {})
+            body = TemplateLibrary().get_and_render(template_key, language, {})
             MessageRouter().send(channel=channel, recipient=phone, body=body)
         except Exception as exc:
             logger.warning(

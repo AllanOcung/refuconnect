@@ -1,11 +1,12 @@
 """
 Africa's Talking USSD Session Manager — C-02.
 
-Implements a 4-step stateful USSD flow:
+Implements a 5-step stateful USSD flow:
   Step 0 — Language selection   (text == '')
   Step 1 — Category selection   (text has 1 part)
   Step 2 — Free-text entry      (text has 2 parts)
-  Step 3 — Confirm & save       (text has 3+ parts)
+  Step 3 — Location selection   (text has 3 parts)
+  Step 4 — Confirm & save       (text has 4+ parts)
 
 Africa's Talking encodes the full session path in the ``text`` field as a
 ``*``-separated string.  Each POST from AT represents one round-trip.
@@ -57,7 +58,7 @@ _STEP_0_MENU = (
     "2. Swahili"
 )
 
-_STEP_1_MENU = (
+_STEP_1_MENU_EN = (
     "Select topic:\n"
     "1. Health\n"
     "2. Protection/Safety\n"
@@ -67,7 +68,31 @@ _STEP_1_MENU = (
     "6. Other"
 )
 
-_STEP_2_PROMPT = "Type your message\n(160 chars max):"
+_STEP_1_MENU_SW = (
+    "Chagua mada:\n"
+    "1. Afya\n"
+    "2. Ulinzi/Usalama\n"
+    "3. Elimu\n"
+    "4. Maji/WASH\n"
+    "5. Usalama wa Chakula\n"
+    "6. Nyingine"
+)
+
+_STEP_2_PROMPT_EN = "Type your message\n(160 chars max):"
+_STEP_2_PROMPT_SW = "Andika ujumbe wako\n(herufi 160 max):"
+
+# ── Location options (shared by USSD menu and reply normalisation) ────────────
+# Single source of truth lives in apps/feedback/location_options.py so SMS,
+# WhatsApp and USSD never drift apart.
+from apps.feedback.location_options import LOCATION_OPTIONS as _LOCATION_OPTIONS
+
+_STEP_3_MENU_EN = "Where did this happen?\n" + "\n".join(
+    f"{i + 1}. {name}" for i, name in enumerate(_LOCATION_OPTIONS)
+)
+_STEP_3_MENU_SW = "Tukio lilitokea wapi?\n" + "\n".join(
+    f"{i + 1}. {'Wilaya nyingine' if name == 'Other district' else name}"
+    for i, name in enumerate(_LOCATION_OPTIONS)
+)
 
 _TIMEOUT_END = (
     "END Session ended.\n"
@@ -161,28 +186,49 @@ class USSDSessionView(APIView):
         if lang_choice not in _LANGUAGE_MAP:
             return "END Invalid language choice.\nDial *123# to try again."
 
+        is_sw = lang_choice == "2"
+
         # Step 1: category selection
         if step == 1:
-            return "CON " + _STEP_1_MENU
+            return "CON " + (_STEP_1_MENU_SW if is_sw else _STEP_1_MENU_EN)
 
         # Validate category choice
         cat_choice = parts[1].strip()
         if cat_choice not in _CATEGORY_MAP:
             # Re-prompt the category menu instead of ending the session
-            return "CON Invalid choice.\n" + _STEP_1_MENU
+            err_prefix = "Chaguo batili.\n" if is_sw else "Invalid choice.\n"
+            return "CON " + err_prefix + (_STEP_1_MENU_SW if is_sw else _STEP_1_MENU_EN)
 
         # Step 2: message-entry prompt
         if step == 2:
-            return "CON " + _STEP_2_PROMPT
+            return "CON " + (_STEP_2_PROMPT_SW if is_sw else _STEP_2_PROMPT_EN)
 
-        # Step 3+: message entered — confirm and save
-        raw_message_text = "*".join(parts[2:]).strip()
+        # Step 3: location selection menu
+        if step == 3:
+            menu = _STEP_3_MENU_SW if lang_choice == "2" else _STEP_3_MENU_EN
+            return "CON " + menu
+
+        # Step 4+: message and location entered — confirm and save.
+        # parts[-1] is the location choice digit; everything between parts[2]
+        # and parts[-1] is the user's message (rejoined in case it contained '*').
+        loc_raw = parts[-1].strip()
+        try:
+            loc_idx = int(loc_raw) - 1
+            # Store the canonical name verbatim, incl. "Other district" so the
+            # field is never empty when the user made an explicit choice.
+            location = _LOCATION_OPTIONS[loc_idx]
+        except (ValueError, IndexError):
+            location = None
+
+        raw_message_text = "*".join(parts[2:-1]).strip() if len(parts) > 4 else parts[2].strip()
         return self._step_3_confirm(
             raw_message_text=raw_message_text,
             phone=phone,
             language=_LANGUAGE_MAP[lang_choice],
             pre_category=_CATEGORY_MAP[cat_choice],
+            location=location,
             session_id=session_id,
+            is_sw=is_sw,
         )
 
     # ── Step 3: confirmation + Feedback creation ──────────────────────────────
@@ -194,6 +240,8 @@ class USSDSessionView(APIView):
         language: str,
         pre_category: str,
         session_id: str,
+        location: str | None = None,
+        is_sw: bool = False,
     ) -> str:
         """
         Validate the message, call ``MessageNormaliser``, and return the
@@ -206,9 +254,17 @@ class USSDSessionView(APIView):
         language:         ISO 639-1 code from step 0 (en / sw / lg).
         pre_category:     Category name from step 1.
         session_id:       AT session ID for logging only.
+        location:         Settlement/district chosen in step 3, or None.
+        is_sw:            True when the user selected Swahili — controls END message language.
         """
         message_text = raw_message_text[:_MAX_MESSAGE_LENGTH]
         if len(message_text.strip()) < 3:
+            if is_sw:
+                return (
+                    "END Ujumbe ni mfupi sana.\n"
+                    "Hakuna ujumbe uliotumwa.\n"
+                    "Piga *123# kujaribu tena."
+                )
             return (
                 "END Message too short.\n"
                 "No message saved.\n"
@@ -226,6 +282,7 @@ class USSDSessionView(APIView):
                 "received_at": datetime.now(stdlib_timezone.utc),
                 "language_hint": language,
                 "pre_category": pre_category,
+                "location": location,
             }
             feedback_id = MessageNormaliser().process(raw_message)
             reference_id = generate_reference_id(feedback_id)
@@ -236,6 +293,12 @@ class USSDSessionView(APIView):
                 feedback_id,
                 session_id,
             )
+            if is_sw:
+                return (
+                    f"END Asante! Ujumbe umepokewa.\n"
+                    f"Ref: {reference_id}\n"
+                    "Piga *123# kutuma mwingine."
+                )
             return (
                 f"END Thank you! Message received.\n"
                 f"Ref: {reference_id}\n"
@@ -245,6 +308,11 @@ class USSDSessionView(APIView):
             logger.exception(
                 "USSDSessionView: Error creating feedback for session_id=%s", session_id
             )
+            if is_sw:
+                return (
+                    "END Samahani, ujumbe wako haukuweza kuhifadhiwa.\n"
+                    "Tafadhali jaribu tena baadaye."
+                )
             return (
                 "END Sorry, your message could not be saved.\n"
                 "Please try again later."

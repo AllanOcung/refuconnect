@@ -73,7 +73,11 @@ services:
     image: *django-image
     restart: unless-stopped
     <<: *django-env
-    command: celery -A config.celery worker --loglevel=info --concurrency=1
+    # Concurrency = how many feedbacks process in parallel. Each worker process
+    # loads the ML models (~2-3 GB), so raise this only on hosts with the RAM to
+    # spare. Override via CELERY_WORKER_CONCURRENCY in .env. Keep prefetch=1
+    # (set in settings) — correct for long-running tasks.
+    command: celery -A config.celery worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-2}
     volumes:
       - .:/app
     depends_on:

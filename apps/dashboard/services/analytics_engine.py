@@ -5,7 +5,7 @@ import json
 from datetime import timedelta
 
 from django.core.cache import cache
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 
@@ -15,7 +15,7 @@ from apps.nlp.models import ThemeCluster
 
 
 class AnalyticsEngine:
-    cache_timeout = 60
+    cache_timeout = 300
     cache_registry_timeout = 3600
 
     def get_summary(self, filters: dict, org_id: int | str) -> dict:
@@ -126,14 +126,63 @@ class AnalyticsEngine:
         today = timezone.localdate()
         week_start = today - timedelta(days=today.weekday())
         month_start = today.replace(day=1)
-        total = qs.count()
-
         trend_start = today - timedelta(days=6)
+
+        # Single-pass aggregate: volume counts, sentiment buckets and the
+        # unprocessed count all in one query. ``distinct=True`` keeps counts
+        # correct even when a category filter (an M2M join) multiplies rows.
+        agg = qs.aggregate(
+            total=Count("feedback_id", distinct=True),
+            today=Count(
+                "feedback_id", filter=Q(submitted_at__date=today), distinct=True
+            ),
+            this_week=Count(
+                "feedback_id",
+                filter=Q(submitted_at__date__gte=week_start),
+                distinct=True,
+            ),
+            this_month=Count(
+                "feedback_id",
+                filter=Q(submitted_at__date__gte=month_start),
+                distinct=True,
+            ),
+            unprocessed=Count(
+                "feedback_id",
+                filter=Q(status__in=[Feedback.Status.NEW, Feedback.Status.PROCESSING]),
+                distinct=True,
+            ),
+            positive=Count(
+                "feedback_id",
+                filter=Q(sentiment__sentiment_label="Positive"),
+                distinct=True,
+            ),
+            neutral=Count(
+                "feedback_id",
+                filter=Q(sentiment__sentiment_label="Neutral"),
+                distinct=True,
+            ),
+            negative=Count(
+                "feedback_id",
+                filter=Q(sentiment__sentiment_label="Negative"),
+                distinct=True,
+            ),
+            # A null sentiment FK or null label both bucket as "Uncertain",
+            # matching the previous row-by-row logic.
+            uncertain=Count(
+                "feedback_id",
+                filter=Q(sentiment__sentiment_label="Uncertain")
+                | Q(sentiment__sentiment_label__isnull=True),
+                distinct=True,
+            ),
+        )
+        total = agg["total"]
+
+        # 7-day submission trend — single grouped query.
         trend_rows = (
             qs.filter(submitted_at__date__gte=trend_start)
             .annotate(day=TruncDate("submitted_at"))
             .values("day")
-            .annotate(count=Count("feedback_id"))
+            .annotate(count=Count("feedback_id", distinct=True))
         )
         trend_counts = {
             (trend_start + timedelta(days=offset)).isoformat(): 0
@@ -144,17 +193,11 @@ class AnalyticsEngine:
                 trend_counts[row["day"].isoformat()] = row["count"]
 
         sentiment_counts = {
-            "Positive": 0,
-            "Neutral": 0,
-            "Negative": 0,
-            "Uncertain": 0,
+            "Positive": agg["positive"],
+            "Neutral": agg["neutral"],
+            "Negative": agg["negative"],
+            "Uncertain": agg["uncertain"],
         }
-        for row in qs.values("sentiment__sentiment_label").annotate(
-            count=Count("feedback_id")
-        ):
-            label = row["sentiment__sentiment_label"] or "Uncertain"
-            if label in sentiment_counts:
-                sentiment_counts[label] += row["count"]
         sentiment_distribution = {
             label: {
                 "count": count,
@@ -178,9 +221,17 @@ class AnalyticsEngine:
             if row["feedback_categories__category__category_name"]
         ]
 
+        # Channel distribution — single grouped query (replaces the per-channel
+        # N+1 loop).
+        channel_counts = {
+            row["channel"]: row["count"]
+            for row in qs.values("channel").annotate(
+                count=Count("feedback_id", distinct=True)
+            )
+        }
         channel_distribution = {}
         for channel, _label in Feedback.Channel.choices:
-            count = qs.filter(channel=channel).count()
+            count = channel_counts.get(channel, 0)
             channel_distribution[channel] = {
                 "count": count,
                 "percentage": round((count / total * 100), 2) if total else 0.0,
@@ -191,15 +242,15 @@ class AnalyticsEngine:
             for row in qs.exclude(location__isnull=True)
             .exclude(location="")
             .values("location")
-            .annotate(count=Count("feedback_id"))
+            .annotate(count=Count("feedback_id", distinct=True))
             .order_by("-count")
         ]
 
         return {
             "volume": {
-                "today": qs.filter(submitted_at__date=today).count(),
-                "this_week": qs.filter(submitted_at__date__gte=week_start).count(),
-                "this_month": qs.filter(submitted_at__date__gte=month_start).count(),
+                "today": agg["today"],
+                "this_week": agg["this_week"],
+                "this_month": agg["this_month"],
                 "total": total,
                 "trend_7_days": [
                     {"date": day, "count": count}
@@ -216,8 +267,5 @@ class AnalyticsEngine:
                 status=Alert.AlertStatus.OPEN,
                 priority_level=Alert.Priority.HIGH,
             ).count(),
-            "unprocessed_count": qs.filter(
-                status__in=[Feedback.Status.NEW, Feedback.Status.PROCESSING]
-            ).count(),
-            "sentiment_trend": self.get_sentiment_timeseries(30, filters),
+            "unprocessed_count": agg["unprocessed"],
         }
