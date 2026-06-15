@@ -133,13 +133,15 @@ class FeedbackFlagView(APIView):
 class LanguageDetectionReviewView(generics.ListAPIView):
     """
     List feedback records that need language detection review.
-    
+
     Includes:
       - Feedbacks with language = 'unknown'
       - Feedbacks with language_confidence < 0.85
-    
+      - Feedbacks an operator manually flagged as "Wrong Language Detection"
+
     This helps operators identify messages where automatic language detection
-    was uncertain and may need manual verification or re-classification.
+    was uncertain (or known-wrong) and may need manual verification or
+    re-classification.
     """
 
     permission_classes = [IsAuthenticated]
@@ -148,16 +150,20 @@ class LanguageDetectionReviewView(generics.ListAPIView):
     ordering_fields = ["submitted_at", "language_confidence"]
     ordering = ["language_confidence", "-submitted_at"]
 
+    # Must match the frontend FlagReason.WrongLanguage value.
+    LANGUAGE_FLAG_REASON = "Wrong Language Detection"
+
     def get_queryset(self):
         from django.conf import settings
         from django.db.models import Q
-        
+
         threshold = getattr(settings, "LANGUAGE_CONFIDENCE_THRESHOLD_TRANSLATION", 0.85)
         return (
             Feedback.objects.select_related("sentiment")
             .filter(
-                Q(language="unknown") | 
-                Q(language_confidence__lt=threshold)
+                Q(language="unknown")
+                | Q(language_confidence__lt=threshold)
+                | Q(is_flagged=True, flag_reason=self.LANGUAGE_FLAG_REASON)
             )
             .only(
                 "feedback_id", "channel", "language", "language_confidence",
