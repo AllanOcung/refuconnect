@@ -35,16 +35,25 @@ class FeedbackNotFoundError(Exception):
 
 # ─── Module-level helpers (used by normaliser + feedback/tasks retry path) ────
 
-def compose_acknowledgement(feedback, language: str = "en", reference_id: str | None = None) -> str:
+def compose_acknowledgement(
+    feedback,
+    language: str = "en",
+    reference_id: str | None = None,
+    include_opt_in: bool = True,
+) -> str:
     """
     Render the ACKNOWLEDGEMENT template for a given feedback record and language.
-    Appends the OPT_IN_PROMPT so the user knows to reply YES/NO.
+    Appends the OPT_IN_PROMPT unless ``include_opt_in=False`` (e.g. for users
+    who already have active consent, where the location prompt is sent instead).
 
     Parameters
     ----------
-    feedback:     Feedback instance.
-    language:     BCP-47 code; falls back to 'en' if template not found.
-    reference_id: Pre-generated reference string; generated here if not supplied.
+    feedback:        Feedback instance.
+    language:        BCP-47 code; falls back to 'en' if template not found.
+    reference_id:    Pre-generated reference string; generated here if not supplied.
+    include_opt_in:  When True (default), append the YES/NO opt-in prompt.
+                     Pass False for users who already opted in so the message
+                     does not redundantly ask them to consent again.
     """
     from apps.common.utils import generate_reference_id
     from apps.notifications.services.template_library import TemplateLibrary
@@ -62,11 +71,12 @@ def compose_acknowledgement(feedback, language: str = "en", reference_id: str | 
         body = f"Thank you for your feedback (Ref: {reference_id})."
 
     # Append the opt-in prompt so users know they can reply YES/NO
-    try:
-        prompt = lib.get_and_render("OPT_IN_PROMPT", language, {})
-        body = f"{body}\n{prompt}"
-    except TemplateNotFoundError:
-        pass  # prompt template not yet available — skip silently
+    if include_opt_in:
+        try:
+            prompt = lib.get_and_render("OPT_IN_PROMPT", language, {})
+            body = f"{body}\n{prompt}"
+        except TemplateNotFoundError:
+            pass  # prompt template not yet available — skip silently
 
     return body
 

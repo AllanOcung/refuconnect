@@ -51,6 +51,7 @@ logger = logging.getLogger("refuconnect.feedback.normaliser")
 _PHONE_CACHE_TTL: int = 3600        # 1 hour — anon_id reuse window
 _DUP_CHECK_TTL: int = 300           # 5 minutes — duplicate-message window
 _ACK_TIMEOUT_SECONDS: int = 10      # hard cap for acknowledgement dispatch
+_LOCATION_PENDING_TTL: int = 86400  # 24 hours — window to reply with location
 
 # Per-channel content limits (characters)
 _MAX_LENGTH = {
@@ -126,6 +127,11 @@ class MessageNormaliser:
         _encrypted_sender = _encrypt(sender) if sender else None
         del _encrypt  # cleanup import alias
 
+        # Capture the phone hash for the location_pending Redis key before zeroing.
+        # Must use the same salt as _get_or_create_anon_id so the key is consistent.
+        _loc_salt: str = getattr(settings, "PHONE_HASH_SALT", settings.SECRET_KEY)
+        _phone_hash: Optional[str] = hash_phone_number(sender, _loc_salt) if sender else None
+
         # PASSWORD ZERO: erase phone number from the in-memory dict immediately.
         # Anything below this line must ONLY use anonymous_user_id.
         raw_message["sender"] = None
@@ -173,6 +179,7 @@ class MessageNormaliser:
             is_duplicate=is_duplicate,
             submitted_at=received_at,
             urgency_level=Feedback.UrgencyLevel.LOW,  # NLP will update
+            location=raw_message.get("location") or None,  # pre-set by USSD step 3
         )
         feedback_id: int = feedback.pk
         # SECURITY: log feedback_id only — anonymous_user_id is acceptable, no phone
@@ -201,6 +208,17 @@ class MessageNormaliser:
             logger.exception(
                 "MessageNormaliser: Failed to enqueue NLP task for feedback_id=%d",
                 feedback_id,
+            )
+
+        # ── Step 6.5: Store location-pending key for SMS/WhatsApp ─────────
+        # On the sender's next message we intercept it as their location reply
+        # instead of creating a new Feedback record.  USSD users already
+        # provided their location in the flow, so they are excluded.
+        if channel in ("SMS", "WhatsApp") and _phone_hash and not is_duplicate:
+            cache.set(
+                f"location_pending:{_phone_hash}",
+                feedback_id,
+                _LOCATION_PENDING_TTL,
             )
 
         # ── Step 7: Acknowledgement dispatch ──────────────────────────────
@@ -433,7 +451,20 @@ class MessageNormaliser:
                     result_holder["success"] = True  # not an error
                     return
 
-                msg_body = compose_acknowledgement(feedback, language=language, reference_id=reference_id)
+                # Build the ack body based on whether the user has active consent.
+                # - Has consent: show location prompt only (no redundant opt-in ask).
+                # - No/inactive consent: show opt-in prompt only (location prompt is
+                #   sent as a follow-up after they reply YES in the channel adapter).
+                has_consent = consent is not None  # already resolved above
+                msg_body = compose_acknowledgement(
+                    feedback,
+                    language=language,
+                    reference_id=reference_id,
+                    include_opt_in=not has_consent,
+                )
+                if channel in ("SMS", "WhatsApp") and has_consent:
+                    from apps.feedback.location_options import build_location_menu
+                    msg_body += "\n" + build_location_menu(language)
                 notification = Notification.objects.create(
                     feedback=feedback,
                     message_type=Notification.MessageType.ACKNOWLEDGEMENT,

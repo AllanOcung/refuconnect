@@ -16,10 +16,14 @@ mandated by C-05:
 
 Retry policy
 ------------
-If any pipeline component raises an exception the whole pipeline is retried up
-to 3 times with exponential back-off (30 s, 120 s, 300 s).  After all attempts
-are exhausted the record is marked 'ProcessingFailed' and AlertManager is
-notified so operations staff can investigate.
+This module runs the pipeline exactly *once* per call.  If any component raises,
+the exception propagates to the caller and the record is left in status
+'Processing' so a later attempt can re-run it.  Retry scheduling (exponential
+back-off) and the terminal 'ProcessingFailed' transition live in the Celery
+task layer (``apps.nlp.tasks.process_feedback_nlp``), which re-queues the task
+without blocking the worker between attempts.  Previously the back-off was a
+blocking ``time.sleep`` inside the worker, which froze the single worker for up
+to several minutes on a failing record and stalled the whole queue.
 
 Constraints (C-05)
 ------------------
@@ -31,15 +35,11 @@ Constraints (C-05)
 from __future__ import annotations
 
 import logging
-import time
 
 from django.db import transaction
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
-
-# Retry back-off delays in seconds: attempt 1→2 waits 30 s, 2→3 waits 120 s.
-_RETRY_DELAYS = [30, 120, 300]
 
 
 class PipelineContext:
@@ -55,6 +55,12 @@ class PipelineContext:
         self.review_flags: dict[str, bool] = {}
         self.translation_failed: bool = False
         self.urgency_rule: str | None = None
+        # True only when the pipeline auto-extracted a location and wrote it to
+        # the record. Used to decide whether 'location' is included in the final
+        # save's update_fields — so a location the submitter provided via a
+        # follow-up reply (written directly to the DB after this run loaded the
+        # record) is never clobbered by a stale in-memory value.
+        self.location_set: bool = False
 
     def set_review_flag(self, flag_name: str) -> None:
         self.review_flags[flag_name] = True
@@ -70,11 +76,15 @@ class PipelineContext:
 
 def process_feedback(feedback_id: int) -> None:
     """
-    Entry point called by the Celery task in tasks.py.
+    Run the NLP pipeline once for a single Feedback record.
 
-    Fetches the Feedback record, marks it Processing, then runs the pipeline
-    with retry logic.  On success → 'Processed'.  After all retries fail →
-    'ProcessingFailed' + AlertManager notification.
+    Fetches the record, marks it 'Processing' (idempotently, row-locked), then
+    runs stages 2–7.  On success → 'Processed' + high-urgency alert dispatch.
+
+    On failure the exception propagates to the caller and the record is left in
+    'Processing'.  Retry scheduling and the terminal 'ProcessingFailed'
+    transition are handled by the Celery task layer (see module docstring) so
+    the worker is never blocked sleeping between attempts.
     """
     from apps.feedback.models import Feedback
     from apps.nlp.pipeline.alert_manager import AlertManager
@@ -101,8 +111,8 @@ def process_feedback(feedback_id: int) -> None:
                 )
                 return
 
-            # Step 1 — mark Processing immediately so a crashed/retried worker
-            # does not pick up the same record again.
+            # Mark Processing immediately so a crashed/retried worker does not
+            # pick up the same record again.
             feedback.status = "Processing"
             feedback.save(update_fields=["status"])
         # Row lock released; heavy ML work runs outside the transaction.
@@ -114,61 +124,39 @@ def process_feedback(feedback_id: int) -> None:
         raise
 
     context = PipelineContext(feedback_id)
-    max_attempts = len(_RETRY_DELAYS) + 1  # 3 attempts total
 
-    for attempt in range(1, max_attempts + 1):
-        try:
-            _run_pipeline(feedback, context)
+    # Single run. On exception the record stays 'Processing'; the Celery task
+    # decides whether to reschedule or mark the record ProcessingFailed.
+    _run_pipeline(feedback, context)
 
-            # Step 8 — persist enriched record
-            feedback.status = "Processed"
-            feedback.processed_at = timezone.now()
-            feedback.save()
-            context.log_context()
-            logger.info(
-                "process_feedback: feedback_id=%d processed successfully (attempt %d/%d).",
-                feedback_id,
-                attempt,
-                max_attempts,
-            )
+    # Persist enriched record. Save only the fields this pipeline computes via
+    # update_fields, so concurrently-updated columns (notably 'location', which
+    # the submitter can set with a follow-up SMS/WhatsApp reply) are not
+    # overwritten by stale values loaded at the start of this run.
+    feedback.status = "Processed"
+    feedback.processed_at = timezone.now()
+    update_fields = [
+        "language",
+        "language_confidence",
+        "message_text_en",
+        "urgency_level",
+        "sentiment",
+        "sentiment_confidence",
+        "status",
+        "processed_at",
+    ]
+    if context.location_set:
+        update_fields.append("location")
+    feedback.save(update_fields=update_fields)
+    context.log_context()
+    logger.info(
+        "process_feedback: feedback_id=%d processed successfully.",
+        feedback_id,
+    )
 
-            # Step 9 — alert if high-urgency (runs after successful save)
-            if feedback.urgency_level == "High":
-                AlertManager.dispatch(feedback, context.urgency_rule)
-
-            return
-
-        except Exception:
-            logger.exception(
-                "process_feedback: pipeline attempt %d/%d failed for feedback_id=%d.",
-                attempt,
-                max_attempts,
-                feedback_id,
-            )
-
-            if attempt < max_attempts:
-                delay = _RETRY_DELAYS[attempt - 1]
-                logger.info(
-                    "process_feedback: retrying feedback_id=%d in %d s (next attempt %d/%d).",
-                    feedback_id,
-                    delay,
-                    attempt + 1,
-                    max_attempts,
-                )
-                time.sleep(delay)
-            else:
-                # All retries exhausted — mark failed and notify AlertManager.
-                logger.critical(
-                    "process_feedback: all %d attempts exhausted for feedback_id=%d. "
-                    "Marking ProcessingFailed.",
-                    max_attempts,
-                    feedback_id,
-                )
-                context.log_context()
-                feedback.status = "ProcessingFailed"
-                feedback.save(update_fields=["status"])
-                AlertManager.dispatch(feedback, context.urgency_rule)
-                raise
+    # Alert if high-urgency (runs after successful save)
+    if feedback.urgency_level == "High":
+        AlertManager.dispatch(feedback, context.urgency_rule)
 
 
 def _run_pipeline(feedback, context: PipelineContext) -> None:
@@ -300,5 +288,19 @@ def _run_pipeline(feedback, context: PipelineContext) -> None:
     else:
         location = location_result
 
-    if location and not feedback.location:
-        feedback.location = location
+    if location:
+        # Read the current location straight from the DB rather than trusting the
+        # in-memory value, which may be stale: the submitter can supply a location
+        # via a follow-up reply (written by the channel adapter) after this run
+        # started. Only persist an auto-extracted location when none exists, and
+        # never overwrite a submitter-provided one.
+        from apps.feedback.models import Feedback
+
+        current_location = (
+            Feedback.objects.filter(pk=feedback.pk)
+            .values_list("location", flat=True)
+            .first()
+        )
+        if not current_location:
+            feedback.location = location
+            context.location_set = True

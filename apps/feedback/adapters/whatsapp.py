@@ -29,6 +29,7 @@ from typing import Optional
 
 import requests
 from django.conf import settings
+from django.core.cache import cache
 from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -396,6 +397,15 @@ class WhatsAppWebhookView(APIView):
                 )
                 return
 
+        elif msg_type == "location":
+            # User shared their GPS location — capture as "lat,lng" string.
+            # Only processed when a location_pending key exists; otherwise ignored.
+            lat = msg.get("location", {}).get("latitude")
+            lng = msg.get("location", {}).get("longitude")
+            if lat is None or lng is None:
+                return
+            body = f"{lat:.5f},{lng:.5f}"
+
         else:
             logger.debug(
                 "WhatsAppWebhookView: Skipping unsupported message type=%s", msg_type
@@ -413,6 +423,8 @@ class WhatsAppWebhookView(APIView):
                     logger.exception(
                         "WhatsAppWebhookView: handle_opt_in failed for sender=[redacted]"
                     )
+                # Prompt for incident location if the user has feedback awaiting one.
+                self._maybe_send_location_prompt(sender)
                 return
             if normalised_body in ("NO", "N", "STOP"):
                 try:
@@ -422,7 +434,49 @@ class WhatsAppWebhookView(APIView):
                     logger.exception(
                         "WhatsAppWebhookView: handle_opt_out failed for sender=[redacted]"
                     )
+                # Location is captured for the feedback regardless of follow-up
+                # consent, so still prompt for it when one is pending.
+                self._maybe_send_location_prompt(sender)
                 return
+
+        # Location reply check — when a pending-location key exists:
+        #   • a shared GPS pin (msg_type=="location") is unambiguous → always consumed;
+        #   • a text reply is consumed only if it is a VALID menu selection (digit or
+        #     exact settlement name).  Other text falls through to new-feedback
+        #     creation, so a genuine second complaint is never swallowed.
+        if msg_type in ("text", "location") and body.strip():
+            from apps.common.utils import hash_phone_number
+            from apps.feedback.location_options import resolve_location_reply
+            _loc_salt = getattr(settings, "PHONE_HASH_SALT", settings.SECRET_KEY)
+            _phone_hash = hash_phone_number(sender, _loc_salt)
+            _pending_id = cache.get(f"location_pending:{_phone_hash}")
+            if _pending_id:
+                if msg_type == "location":
+                    self._handle_location_reply(
+                        feedback_id=_pending_id,
+                        location=body.strip()[:100],
+                        phone_hash=_phone_hash,
+                        sender=sender,
+                    )
+                    return
+                matched, location_value = resolve_location_reply(body)
+                if matched:
+                    self._handle_location_reply(
+                        feedback_id=_pending_id,
+                        location=location_value,
+                        phone_hash=_phone_hash,
+                        sender=sender,
+                    )
+                    return
+                # Not a location selection — fall through to feedback creation.
+
+        # GPS location shares with no pending request are silently dropped —
+        # they carry no feedback text and should not create a Feedback record.
+        if msg_type == "location":
+            logger.debug(
+                "WhatsAppWebhookView: Location message with no pending request — skipping"
+            )
+            return
 
         raw_message: dict = {
             "channel": "WhatsApp",
@@ -437,6 +491,85 @@ class WhatsAppWebhookView(APIView):
         feedback_id = MessageNormaliser().process(raw_message)
         # SECURITY: log feedback_id only, never the sender phone number
         logger.debug("WhatsAppWebhookView: Created feedback_id=%s", feedback_id)
+
+    @staticmethod
+    def _maybe_send_location_prompt(sender: str) -> None:
+        """
+        Send the localized location menu if the sender has feedback awaiting a
+        location (a ``location_pending`` Redis key). The menu language follows the
+        pending feedback's detected language so prompts stay consistent with how
+        the feedback was submitted. Best-effort: failures are logged, not raised.
+        """
+        try:
+            from apps.common.utils import hash_phone_number
+            from apps.feedback.location_options import build_location_menu
+            from apps.feedback.models import Feedback
+
+            _loc_salt = getattr(settings, "PHONE_HASH_SALT", settings.SECRET_KEY)
+            _phone_hash = hash_phone_number(sender, _loc_salt)
+            _pending_id = cache.get(f"location_pending:{_phone_hash}")
+            if not _pending_id:
+                return
+            lang = (
+                Feedback.objects.filter(feedback_id=_pending_id)
+                .values_list("language", flat=True)
+                .first()
+            ) or "en"
+            WhatsAppAdapter().send_message(sender, build_location_menu(lang))
+        except Exception:
+            logger.warning(
+                "WhatsAppWebhookView: location prompt failed for sender=[redacted]"
+            )
+
+    @staticmethod
+    def _handle_location_reply(
+        feedback_id: int,
+        location: str | None,
+        phone_hash: str,
+        sender: str,
+    ) -> None:
+        """
+        Update ``Feedback.location`` with the resolved selection and clear the
+        pending-location Redis key.
+
+        Parameters
+        ----------
+        feedback_id: PK of the Feedback awaiting a location.
+        location:    Canonical settlement name, a "lat,lng" string from a GPS pin,
+                     or None for "Other district" (left null, parity with USSD).
+        phone_hash:  Salted SHA-256 hash of the sender's phone.
+        sender:      Raw E.164 phone — used for confirmation ack, then zeroed.
+                     NEVER logged.
+        """
+        from apps.feedback.models import Feedback
+
+        Feedback.objects.filter(feedback_id=feedback_id).update(location=location)
+        cache.delete(f"location_pending:{phone_hash}")
+        logger.debug(
+            "WhatsAppWebhookView: Location recorded for feedback_id=%d value=%r",
+            feedback_id,
+            location,
+        )
+
+        lang = (
+            Feedback.objects.filter(feedback_id=feedback_id)
+            .values_list("language", flat=True)
+            .first()
+        )
+        ack = (
+            "Mahali pamepokelewa. Asante."
+            if lang == "sw"
+            else "Location received. Thank you."
+        )
+        try:
+            WhatsAppAdapter().send_message(sender, ack)
+        except Exception:
+            logger.warning(
+                "WhatsAppWebhookView: Location confirmation ack failed for feedback_id=%d",
+                feedback_id,
+            )
+        finally:
+            sender = None  # Privacy wipe  # noqa: F841
 
     @staticmethod
     def _fetch_and_store(

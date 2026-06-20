@@ -92,11 +92,17 @@ class SMSAdapter:
         phone_number: Recipient in E.164 format, e.g. ``+256700123456``.
         message:      Text to deliver (split automatically for >160 chars).
         """
+        # AT sandbox does not accept custom sender IDs — use None in sandbox mode
+        # (mirrors MessageRouter._send_sms). Passing the short code as the sender
+        # on the sandbox is what produces the "no-recipients" failure.
+        is_sandbox = getattr(settings, "AFRICAS_TALKING_USERNAME", "") == "sandbox"
+        sender_id = None if is_sandbox else (getattr(settings, "SMS_SHORT_CODE", None) or None)
+
         try:
             response = self._sms.send(
                 message,
                 [phone_number],
-                getattr(settings, "SMS_SHORT_CODE", None) or None,
+                sender_id,
             )
             recipients = (
                 response.get("SMSMessageData", {}).get("Recipients", [])
@@ -264,6 +270,8 @@ class SMSWebhookView(APIView):
                 ConsentManager().handle_opt_in(phone=phone, channel="SMS")
             except Exception:
                 logger.exception("SMSWebhookView: handle_opt_in failed for message_id=%s", message_id)
+            # Prompt for incident location if the user has feedback awaiting one.
+            self._maybe_send_location_prompt(phone)
             return Response({"detail": "ok"}, status=status.HTTP_200_OK)
 
         if normalised_body in ("NO", "N", "STOP"):
@@ -272,7 +280,32 @@ class SMSWebhookView(APIView):
                 ConsentManager().handle_opt_out(phone=phone, channel="SMS")
             except Exception:
                 logger.exception("SMSWebhookView: handle_opt_out failed for message_id=%s", message_id)
+            # Location is captured for the feedback regardless of follow-up
+            # consent, so still prompt for it when one is pending.
+            self._maybe_send_location_prompt(phone)
             return Response({"detail": "ok"}, status=status.HTTP_200_OK)
+
+        # Location reply check — when a pending-location key exists, only consume
+        # this SMS as a location if it is a VALID menu selection (digit or exact
+        # settlement name).  Any other text falls through and becomes new feedback,
+        # so a genuine second complaint is never swallowed.
+        from apps.common.utils import hash_phone_number
+        from apps.feedback.location_options import resolve_location_reply
+        _loc_salt = getattr(settings, "PHONE_HASH_SALT", settings.SECRET_KEY)
+        _phone_hash = hash_phone_number(phone, _loc_salt)
+        _pending_id = cache.get(f"location_pending:{_phone_hash}")
+        if _pending_id:
+            matched, location_value = resolve_location_reply(body)
+            if matched:
+                self._handle_location_reply(
+                    feedback_id=_pending_id,
+                    location=location_value,
+                    phone_hash=_phone_hash,
+                    phone=phone,
+                )
+                return Response({"detail": "ok"}, status=status.HTTP_200_OK)
+            # Not a location selection — fall through to feedback creation.
+            # The normaliser overwrites the pending key for the new feedback.
 
         # Step 4: Build raw_message and delegate to MessageNormaliser
         raw_message: dict = {
@@ -287,6 +320,83 @@ class SMSWebhookView(APIView):
         # SECURITY: log feedback_id only, never the phone number
         logger.debug("SMSWebhookView: Created feedback_id=%s", feedback_id)
         return Response({"detail": "ok"}, status=status.HTTP_200_OK)
+
+    @staticmethod
+    def _maybe_send_location_prompt(phone: str) -> None:
+        """
+        Send the localized location menu if the sender has feedback awaiting a
+        location (a ``location_pending`` Redis key). The menu language follows the
+        pending feedback's detected language so prompts stay consistent with how
+        the feedback was submitted. Best-effort: failures are logged, not raised.
+        """
+        try:
+            from apps.common.utils import hash_phone_number
+            from apps.feedback.location_options import build_location_menu
+            from apps.feedback.models import Feedback
+
+            _loc_salt = getattr(settings, "PHONE_HASH_SALT", settings.SECRET_KEY)
+            _phone_hash = hash_phone_number(phone, _loc_salt)
+            _pending_id = cache.get(f"location_pending:{_phone_hash}")
+            if not _pending_id:
+                return
+            lang = (
+                Feedback.objects.filter(feedback_id=_pending_id)
+                .values_list("language", flat=True)
+                .first()
+            ) or "en"
+            SMSAdapter().send(phone, build_location_menu(lang))
+        except Exception:
+            logger.warning("SMSWebhookView: location prompt failed")
+
+    @staticmethod
+    def _handle_location_reply(
+        feedback_id: int,
+        location: str | None,
+        phone_hash: str,
+        phone: str,
+    ) -> None:
+        """
+        Update ``Feedback.location`` with the resolved selection and clear the
+        pending-location Redis key.
+
+        Parameters
+        ----------
+        feedback_id: PK of the Feedback awaiting a location.
+        location:    Canonical settlement name, or None for "Other district"
+                     (left null, parity with USSD).
+        phone_hash:  Salted SHA-256 hash of the sender's phone (used as Redis key).
+        phone:       Raw E.164 phone — used only for the confirmation ack, then
+                     immediately zeroed.  NEVER logged.
+        """
+        from apps.feedback.models import Feedback
+
+        Feedback.objects.filter(feedback_id=feedback_id).update(location=location)
+        cache.delete(f"location_pending:{phone_hash}")
+        logger.debug(
+            "SMSWebhookView: Location recorded for feedback_id=%d value=%r",
+            feedback_id,
+            location,
+        )
+
+        lang = (
+            Feedback.objects.filter(feedback_id=feedback_id)
+            .values_list("language", flat=True)
+            .first()
+        )
+        ack = (
+            "Mahali pamepokelewa. Asante."
+            if lang == "sw"
+            else "Location received. Thank you."
+        )
+        try:
+            SMSAdapter().send(phone, ack)
+        except Exception:
+            logger.warning(
+                "SMSWebhookView: Location confirmation ack failed for feedback_id=%d",
+                feedback_id,
+            )
+        finally:
+            phone = None  # Privacy wipe  # noqa: F841
 
     @staticmethod
     def _assemble_multipart(

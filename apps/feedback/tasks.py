@@ -39,6 +39,9 @@ def trigger_nlp_pipeline(self, feedback_id: int) -> None:
     Entry-point task: hand off a newly created Feedback record to the NLP pipeline.
 
     Kept in the feedback app so channel views don't import directly from nlp.
+    The pipeline runs once per execution; on failure the task reschedules via a
+    non-blocking ``self.retry`` and, once retries are exhausted, marks the
+    record 'ProcessingFailed' and alerts ops.
     """
     try:
         from apps.nlp.pipeline.consumer import process_feedback
@@ -50,7 +53,12 @@ def trigger_nlp_pipeline(self, feedback_id: int) -> None:
             feedback_id,
             self.request.retries + 1,
         )
-        raise self.retry(exc=exc)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+
+        from apps.nlp.tasks import _mark_processing_failed
+
+        _mark_processing_failed(feedback_id)
 
 
 @shared_task

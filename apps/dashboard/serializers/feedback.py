@@ -5,7 +5,7 @@ from rest_framework import serializers
 from apps.dashboard.serializers.audit import AuditTrailSerializer
 from apps.dashboard.serializers.users import FeedbackReviewedBySerializer
 from apps.feedback.models import Alert, Category, Feedback, FeedbackCategory, FeedbackMedia
-from apps.notifications.models import Notification
+from apps.notifications.models import Notification, UserConsent
 
 
 class SentimentNestedSerializer(serializers.Serializer):
@@ -43,7 +43,7 @@ class FeedbackMediaDashboardSerializer(serializers.ModelSerializer):
 class NotificationDashboardSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
-        fields = ["message_type", "channel", "delivery_status", "sent_at"]
+        fields = ["message_type", "content", "channel", "delivery_status", "sent_at"]
 
 
 class FeedbackListSerializer(serializers.ModelSerializer):
@@ -95,6 +95,7 @@ class FeedbackDetailSerializer(FeedbackListSerializer):
     audit_trail = serializers.SerializerMethodField()
     alert = FeedbackAlertSerializer(read_only=True)
     reviewed_by = FeedbackReviewedBySerializer(read_only=True)
+    has_consent = serializers.SerializerMethodField()
 
     class Meta(FeedbackListSerializer.Meta):
         fields = [
@@ -122,6 +123,7 @@ class FeedbackDetailSerializer(FeedbackListSerializer):
             "notifications",
             "audit_trail",
             "has_media",
+            "has_consent",
         ]
 
     def get_message_text(self, obj):
@@ -130,6 +132,19 @@ class FeedbackDetailSerializer(FeedbackListSerializer):
     def get_audit_trail(self, obj):
         logs = obj.audit_logs.select_related("user").order_by("created_at")
         return AuditTrailSerializer(logs, many=True).data
+
+    def get_has_consent(self, obj) -> bool:
+        """
+        Whether the submitter opted in to follow-up contact.
+
+        Mirrors the exact check in ResponseComposer.send_response so the UI only
+        offers the targeted-response form when a send would actually succeed.
+        """
+        return UserConsent.objects.filter(
+            anonymous_user_id=obj.anonymous_user_id,
+            consent_type=UserConsent.ConsentType.FOLLOW_UP,
+            is_active=True,
+        ).exists()
 
 
 class FeedbackUpdateSerializer(serializers.Serializer):
