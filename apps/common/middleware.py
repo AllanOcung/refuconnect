@@ -9,6 +9,33 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+class ContentSecurityPolicyMiddleware:
+    """
+    Adds a Content-Security-Policy header to every response.
+
+    The policy is strict for an API-only backend: all resource types are blocked
+    by default; only same-origin connections are allowed. Adjust via
+    CSP_POLICY in settings if the Django admin or Swagger UI is served.
+    """
+
+    _DEFAULT_POLICY = (
+        "default-src 'none'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'none'; "
+        "form-action 'self'"
+    )
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+        self.policy = getattr(settings, "CSP_POLICY", self._DEFAULT_POLICY)
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        response.setdefault("Content-Security-Policy", self.policy)
+        return response
+
+
 class SessionInactivityMiddleware:
     """Expose a warning header when an authenticated dashboard session is idle."""
 

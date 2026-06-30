@@ -101,6 +101,36 @@ def send_password_reset_email(user: "User", token: str) -> bool:
     )
 
 
+def send_urgent_alert_email(user: "User", feedback) -> bool:
+    """
+    Notify an NGO staff member that a high-urgency feedback needs review.
+
+    ``feedback`` is a Feedback instance; we use the English text when available
+    so the alert is readable regardless of the original language.
+    """
+    feedback_url = (
+        f"{settings.DASHBOARD_URL.rstrip('/')}/feedback/{feedback.feedback_id}"
+    )
+    message = (getattr(feedback, "message_text_en", None) or feedback.message_text or "").strip()
+    if len(message) > 300:
+        message = message[:300].rstrip() + "…"
+    context = {
+        "user_name": user.full_name,
+        "feedback_id": feedback.feedback_id,
+        "channel": feedback.channel,
+        "location": feedback.location or "Unknown",
+        "submitted_at": feedback.submitted_at,
+        "message_excerpt": message,
+        "feedback_url": feedback_url,
+    }
+    return _send_branded_email(
+        subject=f"Urgent feedback #{feedback.feedback_id} needs attention",
+        to=user.email,
+        template_base="urgent_alert",
+        context=context,
+    )
+
+
 def send_account_locked_email(user: "User") -> bool:
     """Send the 'Your account has been locked' email."""
     context = {

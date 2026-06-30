@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from celery import shared_task
@@ -8,6 +9,44 @@ from django.utils import timezone
 
 from apps.dashboard.models import ReportExport, ScheduledReport
 from apps.dashboard.services.report_generator import ReportGenerator
+
+logger = logging.getLogger(__name__)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=120)
+def send_urgent_feedback_alert(self, feedback_id: int) -> dict:
+    """
+    Email every alert-subscribed active staff member about a high-urgency feedback.
+
+    Enqueued by AlertManager when a high-urgency Alert is first created, so the
+    NLP pipeline is never blocked by email delivery. Recipients are active users
+    with ``receive_alerts=True``.
+    """
+    from apps.dashboard.models import User
+    from apps.dashboard.services.emails import send_urgent_alert_email
+    from apps.feedback.models import Feedback
+
+    try:
+        feedback = Feedback.objects.select_related("sentiment").get(feedback_id=feedback_id)
+    except Feedback.DoesNotExist:
+        logger.warning("send_urgent_feedback_alert: feedback_id=%s not found", feedback_id)
+        return {"feedback_id": feedback_id, "sent": 0}
+
+    recipients = (
+        User.objects.filter(status=User.Status.ACTIVE, receive_alerts=True)
+        .exclude(email="")
+    )
+    sent = 0
+    for user in recipients:
+        if send_urgent_alert_email(user, feedback):
+            sent += 1
+    logger.info(
+        "send_urgent_feedback_alert: feedback_id=%s emailed %d/%d staff",
+        feedback_id,
+        sent,
+        recipients.count(),
+    )
+    return {"feedback_id": feedback_id, "sent": sent}
 
 
 @shared_task(bind=True)

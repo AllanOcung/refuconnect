@@ -150,8 +150,8 @@ class LanguageDetectionReviewView(generics.ListAPIView):
     ordering_fields = ["submitted_at", "language_confidence"]
     ordering = ["language_confidence", "-submitted_at"]
 
-    # Must match the frontend FlagReason.WrongLanguage value.
-    LANGUAGE_FLAG_REASON = "Wrong Language Detection"
+    # Must match the frontend FlagReason values for language/translation issues.
+    LANGUAGE_FLAG_REASONS = ("Wrong Language Detection", "Wrong Translation")
 
     def get_queryset(self):
         from django.conf import settings
@@ -163,7 +163,7 @@ class LanguageDetectionReviewView(generics.ListAPIView):
             .filter(
                 Q(language="unknown")
                 | Q(language_confidence__lt=threshold)
-                | Q(is_flagged=True, flag_reason=self.LANGUAGE_FLAG_REASON)
+                | Q(is_flagged=True, flag_reason__in=self.LANGUAGE_FLAG_REASONS)
             )
             .only(
                 "feedback_id", "channel", "language", "language_confidence",

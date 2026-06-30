@@ -48,6 +48,9 @@ except ImportError:
 REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {  # noqa: F405
     "anon": "10000/minute",
     "user": "10000/minute",
+    "login": "10000/minute",
+    "password_reset": "10000/minute",
+    "accept_invite": "10000/minute",
 }
 
 # ─── Show full errors ────────────────────────────────────────────────────────

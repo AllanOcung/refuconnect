@@ -1,0 +1,44 @@
+{% extends "emails/base.html" %}
+{% block title %}Urgent feedback needs attention{% endblock %}
+{% block body %}
+  <h1 style="margin:0 0 16px; font-size:22px; line-height:1.3; color:#b91c1c;">Urgent feedback needs attention</h1>
+
+  <p style="margin:0 0 12px; font-size:15px; line-height:1.55;">Hi {{ user_name }},</p>
+
+  <p style="margin:0 0 16px; font-size:15px; line-height:1.55;">
+    A new <strong>high-urgency</strong> feedback submission (<strong>#{{ feedback_id }}</strong>) has been flagged and needs review.
+  </p>
+
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px; border:1px solid #e5e7eb; border-radius:8px;">
+    <tr>
+      <td style="padding:16px; font-size:14px; line-height:1.6; color:#374151;">
+        <div><strong>Channel:</strong> {{ channel }}</div>
+        <div><strong>Location:</strong> {{ location }}</div>
+        <div><strong>Received:</strong> {{ submitted_at }}</div>
+        <div style="margin-top:12px; padding-top:12px; border-top:1px solid #eef0f2; color:#111827;">&ldquo;{{ message_excerpt }}&rdquo;</div>
+      </td>
+    </tr>
+  </table>
+
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px;">
+    <tr>
+      <td style="background-color:#b91c1c; border-radius:8px;">
+        <a href="{{ feedback_url }}"
+           style="display:inline-block; padding:12px 22px; color:#ffffff; font-weight:600; font-size:14px; text-decoration:none; border-radius:8px;">
+          Review feedback
+        </a>
+      </td>
+    </tr>
+  </table>
+
+  <p style="margin:0 0 6px; font-size:13px; color:#6b7280;">
+    If the button doesn't work, paste this link into your browser:
+  </p>
+  <p style="margin:0 0 16px; font-size:13px; color:#374151; word-break:break-all;">
+    <a href="{{ feedback_url }}" style="color:#0f766e;">{{ feedback_url }}</a>
+  </p>
+
+  <p style="margin:0; font-size:13px; color:#6b7280;">
+    You're receiving this because alert notifications are enabled for your account. You can turn them off in your profile settings.
+  </p>
+{% endblock %}

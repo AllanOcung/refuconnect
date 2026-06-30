@@ -33,11 +33,14 @@ class AnalyticsEngine:
         filters = filters or {}
         today = timezone.localdate()
         since = today - timedelta(days=days - 1)
-        qs = self._filtered_feedback(filters).filter(submitted_at__date__gte=since)
+        qs = Feedback.objects.filter(
+            pk__in=self._filtered_feedback(filters).values("pk"),
+            submitted_at__date__gte=since,
+        )
         rows = (
             qs.annotate(day=TruncDate("submitted_at"))
             .values("day", "sentiment__sentiment_label")
-            .annotate(count=Count("feedback_id"))
+            .annotate(count=Count("feedback_id", distinct=True))
             .order_by("day")
         )
         by_day = {
@@ -119,10 +122,22 @@ class AnalyticsEngine:
             "feedback_categories__category"
         )
         filterset = FeedbackFilterSet(data=filters, queryset=qs)
-        return filterset.qs.distinct() if filterset.is_valid() else qs
+        # NOTE: do not apply .distinct() here. Combining a queryset-level
+        # .distinct() with .values(...).annotate(Count(..., distinct=True))
+        # collapses grouped counts to 1 (e.g. channel distribution). Every
+        # aggregation in this engine already uses Count(distinct=True), which
+        # correctly dedupes feedback even when a category (M2M) filter
+        # multiplies rows, so the queryset-level distinct is unnecessary.
+        return filterset.qs if filterset.is_valid() else qs
 
     def _compute_summary(self, filters: dict) -> dict:
-        qs = self._filtered_feedback(filters)
+        # Resolve the matching feedback to a clean queryset of PKs. The filtered
+        # queryset can carry a JOIN + .distinct() (django_filters adds distinct
+        # for the M2M category filter), and ".distinct() + .values().annotate()"
+        # collapses grouped counts to 1. Re-querying by pk gives a join-free
+        # queryset so every group-by (channel, sentiment, geography) counts
+        # correctly.
+        qs = Feedback.objects.filter(pk__in=self._filtered_feedback(filters).values("pk"))
         today = timezone.localdate()
         week_start = today - timedelta(days=today.weekday())
         month_start = today.replace(day=1)
