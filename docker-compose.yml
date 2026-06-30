@@ -13,14 +13,15 @@ services:
   db:
     image: postgres:13-alpine
     restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_DB: refuconnect
-      POSTGRES_USER: refuconnect
-      POSTGRES_PASSWORD: refuconnect
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U refuconnect"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5

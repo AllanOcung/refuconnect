@@ -53,6 +53,21 @@ class AlertManager:
                 "Alert created for high-urgency feedback_id=%d.",
                 feedback.feedback_id,
             )
+
+            # Email alert-subscribed staff — only for genuinely high-urgency
+            # feedback. dispatch() is also used for processing-failure alerts
+            # (passed a non-High feedback), which must not trigger this email.
+            if getattr(feedback, "urgency_level", None) == "High":
+                try:
+                    from apps.dashboard.tasks import send_urgent_feedback_alert
+
+                    send_urgent_feedback_alert.delay(feedback.feedback_id)
+                except Exception:
+                    logger.exception(
+                        "AlertManager.dispatch: failed to enqueue urgent alert "
+                        "email for feedback_id=%d.",
+                        feedback.feedback_id,
+                    )
         except Exception:
             # Alert creation is best-effort — never fail the pipeline over it.
             logger.exception(

@@ -16,6 +16,11 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.common.audit import AuditAction, log_audit_event
 from apps.common.encryption import decrypt_field, encrypt_field
 from apps.common.passwords import PASSWORD_POLICY_DETAIL, is_password_valid
+from apps.common.throttles import (
+    AcceptInviteRateThrottle,
+    LoginRateThrottle,
+    PasswordResetRateThrottle,
+)
 from apps.dashboard.models import User
 from apps.dashboard.permissions import IsAdministrator
 from apps.dashboard.services.backup_codes import (
@@ -32,10 +37,8 @@ _MAX_FAILED_ATTEMPTS = 5
 
 
 def _mfa_secret_for_use(stored_secret: str) -> str:
-    try:
-        return decrypt_field(stored_secret)
-    except Exception:
-        return stored_secret
+    """Decrypt a stored MFA secret. Raises ValueError if decryption fails."""
+    return decrypt_field(stored_secret)
 
 
 # Password policy moved to apps.common.passwords for shared use.
@@ -43,10 +46,14 @@ def _mfa_secret_for_use(stored_secret: str) -> str:
 
 class LoginView(AuditLogMixin, APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [LoginRateThrottle]
 
     def post(self, request: Request) -> Response:
-        email = request.data.get("email", "").strip().lower()
+        raw_email = request.data.get("email", "")
         password = request.data.get("password", "")
+        if not isinstance(raw_email, str) or not isinstance(password, str):
+            return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+        email = raw_email.strip().lower().replace("\x00", "")
 
         try:
             user = User.objects.get(email=email)
@@ -155,6 +162,7 @@ class LogoutView(AuditLogMixin, APIView):
 
 class PasswordResetRequestView(AuditLogMixin, APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetRateThrottle]
     audit_action = AuditAction.PASSWORD_RESET
 
     def post(self, request: Request) -> Response:
@@ -213,6 +221,7 @@ class PasswordResetConfirmView(AuditLogMixin, APIView):
 
 class AcceptInviteView(AuditLogMixin, APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [AcceptInviteRateThrottle]
     audit_action = AuditAction.USER_MODIFIED
 
     def get(self, request: Request) -> Response:
@@ -295,10 +304,7 @@ class MFAConfirmView(AuditLogMixin, APIView):
                 {"detail": "Invalid MFA code."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        try:
-            request.user.mfa_secret = encrypt_field(pending_secret)
-        except Exception:
-            request.user.mfa_secret = pending_secret
+        request.user.mfa_secret = encrypt_field(pending_secret)
         request.user.mfa_enabled_at = timezone.now()
         request.user.save(update_fields=["mfa_secret", "mfa_enabled_at"])
 

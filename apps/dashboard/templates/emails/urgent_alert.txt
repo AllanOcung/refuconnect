@@ -1,0 +1,17 @@
+Hi {{ user_name }},
+
+URGENT: A new high-urgency feedback submission (#{{ feedback_id }}) needs review.
+
+Channel:  {{ channel }}
+Location: {{ location }}
+Received: {{ submitted_at }}
+
+Message: "{{ message_excerpt }}"
+
+Review it here:
+{{ feedback_url }}
+
+You're receiving this because alert notifications are enabled for your account.
+You can turn them off in your profile settings.
+
+— RefuConnect
